@@ -87,8 +87,7 @@ def _prompt(
     revision: RevisionRequest | None,
 ) -> str:
     candidates = (
-        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places)
-        or "- (none)"
+        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places) or "- (none)"
     )
     diet = "; ".join(f"{p.key}={p.value}" for p in dietary) or "none recorded"
     revision_text = (

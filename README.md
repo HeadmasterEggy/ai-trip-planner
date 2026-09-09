@@ -27,6 +27,11 @@ flowchart TB
     DN --> TOOLS
 ```
 
+A supervisor agent chooses *which* specialists to call, through one typed tool each. It cannot
+touch the validated brief, the memory store or the tool gateway — those are captured when the
+tools are built — so its only freedom is delegation, never the trip facts. When no model is
+configured, or the loop fails, dispatch falls back to running every specialist deterministically.
+
 LangGraph owns state, conflict checks, the round limit and escalation. The specialists own
 role-specific reasoning and tool selection. That split is deliberate: budget red lines and the
 stopping condition should not depend on a model improvising the next step.
@@ -69,7 +74,10 @@ src/trip_planner/models.py          Provider routing and structured-output adapt
 src/trip_planner/budget.py          USD roll-up and budget policy
 src/trip_planner/memory.py          Short-term and long-term preference memory
 src/trip_planner/specialists/       The five specialist agents
+src/trip_planner/supervisor.py      Typed delegation tools and the supervisor loops
+src/trip_planner/chat.py            Message -> brief patch -> re-plan -> reply
 src/trip_planner/tools/             Maps and booking adapters
+src/trip_planner/ui/                Presentation tokens and rendering helpers
 src/trip_planner/workflow.py        LangGraph orchestration
 tests/                              Behaviour tests, no network required
 docs/                               Architecture, orchestration and UI notes
@@ -81,6 +89,22 @@ docs/                               Architecture, orchestration and UI notes
 - [LangGraph orchestration](docs/langgraph-orchestration.md)
 - [Streamlit UI](docs/streamlit-ui.md)
 - [Observability](docs/observability.md)
+
+## Talking to it
+
+The planner is conversational. A message is turned into an explicit patch of the trip brief, the
+orchestrator re-plans, and the reply is written from the resulting plan in the traveller's own
+language:
+
+```
+去京都，2026-10-01 到 2026-10-05，三个人，预算 3000
+make it 4 people instead
+```
+
+Only fields the traveller actually stated are changed. Inferring a date or a budget they did not
+give is worse than asking, because the plan then drifts from the request without anyone noticing.
+Extraction runs through the routed model with a local bilingual parser behind it, so the chat works
+with no API key at all.
 
 ## Scope
 

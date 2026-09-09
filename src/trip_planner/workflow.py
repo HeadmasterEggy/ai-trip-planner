@@ -41,6 +41,7 @@ from .contracts import (
 from .memory import memory as default_memory
 from .ports import AgentContext, ToolGateway
 from .specialists import ALL_SPECIALISTS
+from .supervisor import dispatch_with_supervisor, revise_with_supervisor
 from .tools.maps import create_tool_gateway
 
 DEFAULT_MAX_ROUNDS = 3
@@ -60,7 +61,12 @@ class ProgressEvent:
 @dataclass
 class OrchestratorOptions:
     """Dependencies are injectable so the graph is testable without network or
-    singleton state."""
+    singleton state.
+
+    Passing `specialists` explicitly is also the deterministic seam: it skips
+    supervisor delegation, so a test never depends on a model choosing to call
+    every tool.
+    """
 
     specialists: list[Any] | None = None
     tools: ToolGateway | None = None
@@ -220,7 +226,11 @@ def _resolve(options: OrchestratorOptions):
 def create_orchestrator_graph(options: OrchestratorOptions | None = None):
     options = options or OrchestratorOptions()
     specialists, by_name, tools, mem, max_rounds = _resolve(options)
+    injected_specialists = options.specialists is not None
     emit = options.on_progress or (lambda event: None)
+
+    def emit_raw(kind: str, agent: str, round_no: int, error: str | None) -> None:
+        emit(ProgressEvent(kind, agent, round_no, error))  # type: ignore[arg-type]
 
     def context(brief: TripBrief, round_no: int) -> AgentContext:
         return AgentContext(tripId=brief.tripId, round=round_no, tools=tools, mem=mem)
@@ -235,12 +245,27 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
             emit(ProgressEvent("agent_failed", specialist.name, round_no, str(error)))
             raise
 
+    def deterministic_dispatch(brief: TripBrief) -> list[AgentProposal]:
+        return [run_one(s, brief, 1) for s in specialists]
+
     def dispatch(state: State) -> State:
         brief = state["brief"]
-        return {
-            "round": 1,
-            "proposals": [run_one(s, brief, 1) for s in specialists],
-        }
+        if injected_specialists:
+            return {"round": 1, "proposals": deterministic_dispatch(brief)}
+        try:
+            proposals = dispatch_with_supervisor(specialists, brief, context(brief, 1), emit_raw)
+            # The supervisor may legitimately skip a specialist. Fill the gaps so
+            # the plan always has all five sections rather than silently losing one.
+            missing = [s for s in specialists if s.name not in {p.agent for p in proposals}]
+            if missing:
+                by_agent = {p.agent: p for p in proposals}
+                for specialist in missing:
+                    by_agent[specialist.name] = run_one(specialist, brief, 1)
+                proposals = [by_agent[s.name] for s in specialists]
+        except Exception as error:  # noqa: BLE001
+            print(f"[supervisor] Delegation unavailable; using deterministic dispatch: {error}")
+            proposals = deterministic_dispatch(brief)
+        return {"round": 1, "proposals": proposals}
 
     def detect(state: State) -> State:
         return {"conflicts": detect_conflicts(state["proposals"], state["brief"])}
@@ -248,16 +273,38 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
     def revise(state: State) -> State:
         round_no = state["round"] + 1
         brief = state["brief"]
-        by_agent = {c.targetAgent: c for c in state["conflicts"]}
-        revised: list[AgentProposal] = []
-        for proposal in state["proposals"]:
-            request = by_agent.get(proposal.agent)
-            specialist = by_name.get(proposal.agent)
-            if request is None or specialist is None:
-                revised.append(proposal)
-                continue
-            revised.append(run_one(specialist, brief, round_no, request))
-        return {"round": round_no, "proposals": revised}
+        requests = state["conflicts"]
+        by_agent = {c.targetAgent: c for c in requests}
+
+        def deterministic_revision() -> list[AgentProposal]:
+            out: list[AgentProposal] = []
+            for proposal in state["proposals"]:
+                request = by_agent.get(proposal.agent)
+                specialist = by_name.get(proposal.agent)
+                if request is None or specialist is None:
+                    out.append(proposal)
+                    continue
+                out.append(run_one(specialist, brief, round_no, request))
+            return out
+
+        if injected_specialists:
+            return {"round": round_no, "proposals": deterministic_revision()}
+        try:
+            proposals = revise_with_supervisor(
+                specialists,
+                state["proposals"],
+                requests,
+                brief,
+                context(brief, round_no),
+                emit_raw,
+            )
+        except Exception as error:  # noqa: BLE001
+            print(
+                "[supervisor] Revision delegation unavailable; using deterministic routing: "
+                f"{error}"
+            )
+            proposals = deterministic_revision()
+        return {"round": round_no, "proposals": proposals}
 
     def build_plan(state: State) -> State:
         brief, proposals, conflicts = state["brief"], state["proposals"], state["conflicts"]

@@ -138,3 +138,22 @@ class UserPreference(BaseModel):
     key: str
     value: str
     source: Literal["filter", "chat_confirmed"]
+
+
+# ---------------------------------------------------------------------------
+# The chat contract. Frozen shape: streaming can be added without changing it,
+# because the final frame of a stream is still one ChatResponse.
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    tripId: str
+    message: Annotated[str, Field(min_length=1)]
+    # Optional so a caller can rely on the demo brief. The UI sends the latest
+    # brief so a stateless request can still apply an incremental edit.
+    brief: TripBrief | None = None
+
+
+class ChatResponse(BaseModel):
+    reply: str  # assistant text for the chat stream
+    plan: TripPlan  # the fresh aggregated plan for the trip panel

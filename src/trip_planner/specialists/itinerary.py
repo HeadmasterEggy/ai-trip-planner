@@ -10,6 +10,7 @@ near Tokyo & Kyoto", and every plan silently fell back.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Annotated
 
 from pydantic import BaseModel, Field
@@ -40,6 +41,33 @@ class ItineraryDraft(BaseModel):
     assumptions: list[Annotated[str, Field(min_length=1, max_length=400)]] = Field(
         default_factory=list, max_length=6
     )
+
+
+def travel_conflicts(draft: ItineraryDraft, ctx: AgentContext) -> list[str]:
+    """Check map travel time between consecutive activities on each day.
+
+    These are reported to the orchestrator rather than silently shifting times:
+    the itinerary does not know what else is scheduled that day, so quietly
+    moving an activity could land it on a transport leg it cannot see.
+    """
+    conflicts: list[str] = []
+    for day in sorted({a.day for a in draft.activities}):
+        same_day = sorted(
+            (a for a in draft.activities if a.day == day), key=lambda a: _minutes(a.startTime)
+        )
+        for previous, current in pairwise(same_day):
+            if previous.location == current.location:
+                continue
+            legs = ctx.tools.maps.route(frm=previous.location, to=current.location)
+            required = sum(leg.durationMin for leg in legs)
+            available = _minutes(current.startTime) - _minutes(previous.endTime)
+            if required > available:
+                conflicts.append(
+                    f"geography conflict on day {day}: {previous.location} to "
+                    f"{current.location} needs {required} minutes but only {available} "
+                    "are available"
+                )
+    return conflicts
 
 
 def _minutes(hhmm: str) -> int:
@@ -96,8 +124,7 @@ def _prompt(
 ) -> str:
     cap = brief.budgetTotal * ACTIVITY_BUDGET_SHARE
     candidates = (
-        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places)
-        or "- (none)"
+        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places) or "- (none)"
     )
     revision_text = (
         f"\n\nRevision to address exactly:\n{revision.reason}\nConstraints: "
@@ -148,6 +175,14 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             print(f"[itinerary] Model draft failed; using a safe local plan: {error}")
             draft = _fallback(brief, days, grounded)
 
+    conflicts = travel_conflicts(draft, ctx)
+    if revision is not None and conflicts:
+        # A revision must not carry a newly discovered geography conflict
+        # forward. Fall back to the conservative plan and re-check it.
+        draft = _fallback(brief, days, grounded)
+        source = "deterministic fallback"
+        conflicts = travel_conflicts(draft, ctx)
+
     items = [
         ProposalItem(
             kind="activity",
@@ -165,6 +200,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         summary=draft.summary,
         items=items,
         assumptions=[f"Planner source: {source}.", *draft.assumptions],
+        conflictsWith=conflicts,
     )
 
 
