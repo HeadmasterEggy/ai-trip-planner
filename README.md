@@ -1,87 +1,89 @@
 # AI Trip Planner
 
-Five specialist agents negotiate a trip plan under a LangGraph orchestrator, with a Streamlit UI.
+A single-user, multi-agent travel workspace. Describe a trip, and five specialist agents research
+it in parallel under a LangGraph orchestrator that checks their proposals against each other,
+re-plans what conflicts, and escalates anything it cannot resolve.
 
-**[Live demo](#)** · Python 3.11+ · LangChain · LangGraph · Streamlit
+Python 3.11+ · LangChain · LangGraph · Pydantic · Streamlit
 
-## What it does
+## Architecture
 
-A trip brief goes to five specialists in parallel. Each returns a validated proposal. The
-orchestrator then looks for conflicts across those proposals — budget overruns, and activities
-scheduled on top of a transport leg — and re-runs only the specialists it needs to, up to three
-rounds. Anything still unresolved is escalated to the traveller rather than quietly accepted.
-
+```mermaid
+flowchart TB
+    U[User] --> UI[Streamlit UI]
+    UI --> WF[LangGraph workflow]
+    WF --> IT[Itinerary specialist]
+    WF --> TR[Transport specialist]
+    WF --> AC[Accommodation specialist]
+    WF --> DG[Destination guide specialist]
+    WF --> DN[Dining specialist]
+    WF --> CONF[Conflict detection and revision]
+    CONF --> HITL[HITL checkpoints]
+    CONF --> PLAN[Validated TripPlan]
+    IT --> TOOLS[Typed tool ports]
+    TR --> TOOLS
+    AC --> TOOLS
+    DG --> TOOLS
+    DN --> TOOLS
 ```
-START -> dispatch_specialists -> detect_conflicts
-                                      | (conditional)
-                         revise_conflicts <-> detect_conflicts
-                                      |
-                                 build_plan -> END
-```
 
-| Specialist | Role | Reasoning |
+LangGraph owns state, conflict checks, the round limit and escalation. The specialists own
+role-specific reasoning and tool selection. That split is deliberate: budget red lines and the
+stopping condition should not depend on a model improvising the next step.
+
+| Specialist | Section | Reasoning |
 | --- | --- | --- |
 | `itinerary` | Day plan | Model, grounded in map candidates |
-| `transport` | Getting around | Deterministic calculator over booking + maps |
+| `transport` | Getting around | Deterministic calculator over booking and maps |
 | `accommodation` | Stay | Deterministic calculator over booking |
-| `destination-guide` | Customs, safety, packing | Model, grounded in map candidates |
-| `dining` | Meal budget and venues | Model, grounded in map candidates |
+| `destination-guide` | Destination guide | Model, grounded in map candidates |
+| `dining` | Food and dining | Model, grounded in map candidates |
 
 Transport and accommodation are deliberately deterministic: a model may narrate a stay, but it
 never prices one.
 
-## Run it
+## Quick start
 
 ```bash
 uv sync
-uv run streamlit run streamlit_app.py
-```
-
-It runs with no API keys and no network. Every specialist falls back to deterministic output and
-the tools serve fixtures, so the whole loop — including conflict detection and escalation — is
-exercised offline. Copy `.env.example` to `.env` to add live models.
-
-```bash
-uv run pytest        # 10 tests, no network
+uv run streamlit run streamlit_app.py     # http://localhost:8501
+uv run pytest
 uv run ruff check .
 ```
 
-## Design notes
+It runs with no API keys and no network. Every specialist falls back to deterministic output and
+the tool ports serve fixtures, so the whole loop — dispatch, conflict detection, revision and
+escalation — is exercised offline. Copy `.env.example` to `.env` to add live models.
 
-**Everything crossing a model boundary is validated.** Specialists return Pydantic models, not
-free text. A draft that fails validation is rejected and the specialist falls back, so a bad
-response degrades one section instead of corrupting the plan.
+`USE_MOCK_TOOLS=true` uses local map and booking fixtures; set it to `false` to use the
+OpenStreetMap adapters. Provider failures fall back to validated deterministic output rather than
+failing the request.
 
-**Grounding is enforced, not requested.** An activity's location must be a candidate name from the
-maps port, copied exactly. The rule is stated in the prompt *and* checked in code, because models
-reliably decorate names — appending the category to a place name silently invalidated every draft
-during development.
+## Repository layout
 
-**Schema limits are repeated in the prompt.** Both DeepSeek and MiniMax treat a JSON schema's
-`maxLength` and `maxItems` as advisory. Structured-output extraction retries only a few times
-before giving up, so the first attempt has to be close.
+```text
+streamlit_app.py                    Streamlit entry point (Cloud looks for this name)
+src/trip_planner/contracts.py       Pydantic contracts: brief, proposal, plan, HITL
+src/trip_planner/ports.py           Maps, booking and memory port protocols
+src/trip_planner/models.py          Provider routing and structured-output adaptation
+src/trip_planner/budget.py          USD roll-up and budget policy
+src/trip_planner/memory.py          Short-term and long-term preference memory
+src/trip_planner/specialists/       The five specialist agents
+src/trip_planner/tools/             Maps and booking adapters
+src/trip_planner/workflow.py        LangGraph orchestration
+tests/                              Behaviour tests, no network required
+docs/                               Architecture, orchestration and UI notes
+```
 
-**MiniMax runs two independent account systems.** Mainland-China keys work against
-`api.minimaxi.com` and return `401 invalid api key (2049)` against `api.minimax.io`, and vice
-versa. It also ignores a forced `tool_choice`, answering in prose with no tool call — which is
-indistinguishable from an auth failure at the call site.
+## Documentation
 
-**Conflict constraints name what to avoid and who holds it.** A revising specialist only ever sees
-its own proposal. Handed bare clock times, the itinerary agent guessed, and in one round moved an
-activity exactly onto the transport leg it was meant to avoid; the budget overrun oscillated
-29.25% → 16.50% → 25.25% without settling. The constraint now reads
-`on day 4 keep clear of 09:00-11:20, held by transport (Tokyo → Kyoto)`.
+- [Agent architecture](docs/agent-architecture.md)
+- [LangGraph orchestration](docs/langgraph-orchestration.md)
+- [Streamlit UI](docs/streamlit-ui.md)
+- [Observability](docs/observability.md)
 
-## Observability
+## Scope
 
-Set `LANGSMITH_TRACING=true` with an API key and every run produces one trace tree: a span per
-specialist per round, the conflict detector, and each LangGraph node. Transport and accommodation
-never call LangChain, so they carry explicit spans — otherwise a five-agent system would show up
-as three.
-
-## Known limits
-
-Budget negotiation is not yet effective. Once the itinerary contributes real costs, the demo brief
-lands slightly over budget and the two costly specialists are already at their floor, so it runs
-the full three rounds and escalates. The maps and booking adapters ship deterministic fixtures;
-`USE_MOCK_TOOLS=false` switches maps to OpenStreetMap, and booking has no live provider.
+Single-user: enter a trip, inspect grounded recommendations, see what needs a human decision, and
+export the plan. Multi-user editing, social features, payments and booking fulfilment are out of
+scope.

@@ -11,6 +11,8 @@ were expensive to find:
   With tool_choice "auto" it emits a well-formed call.
 - Both providers treat a JSON schema's numeric constraints as advisory, so the
   specialists restate their hard limits in the prompt as well.
+- DeepSeek rejects LangChain's default json_schema response format, so
+  structured output goes through tool calling instead.
 """
 
 from __future__ import annotations
@@ -88,7 +90,10 @@ def create_structured_invoker(
     if model is None:
         return None
 
-    structured = model.with_structured_output(schema)
+    # Tool calling, not response_format: DeepSeek rejects the json_schema
+    # response format LangChain reaches for by default with
+    # "This response_format type is unavailable now".
+    structured = model.with_structured_output(schema, method="function_calling")
 
     def call(prompt: str) -> Schema:
         result: Any = structured.invoke(prompt)
