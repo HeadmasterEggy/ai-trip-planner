@@ -56,6 +56,10 @@ def _load_cloud_secrets() -> None:
         "MINIMAX_BASE_URL",
         "USE_MOCK_TOOLS",
         "OSM_USER_AGENT",
+        "LANGSMITH_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_PROJECT",
+        "LANGSMITH_ENDPOINT",
     )
     try:
         for key in keys:
