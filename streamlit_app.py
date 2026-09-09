@@ -9,6 +9,15 @@ from a test or a script without importing Streamlit at all.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# Streamlit Community Cloud installs from requirements.txt and does not install
+# this project itself, so the src layout is not on the path there. Locally the
+# editable install already provides it and this is a no-op.
+_SRC = Path(__file__).parent / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 

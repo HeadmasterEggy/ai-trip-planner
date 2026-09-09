@@ -40,7 +40,7 @@ requires-dist = [
     { name = "langchain", specifier = ">=1.2,<2" },
     { name = "langchain-openai", specifier = ">=1.1,<2" },
     { name = "langgraph", specifier = ">=1.0,<2" },
-    { name = "langsmith", specifier = ">=0.12.2" },
+    { name = "langsmith", specifier = ">=0.4,<1" },
     { name = "pydantic", specifier = ">=2.9,<3" },
     { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "streamlit", specifier = ">=1.49,<2" },
