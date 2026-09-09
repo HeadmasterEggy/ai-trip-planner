@@ -3,12 +3,14 @@
 ## Runtime model
 
 ```text
-trip brief
-  -> LangGraph workflow
-     -> five specialists, each with a role definition and an output schema
-        -> itinerary, transport, accommodation, destination guide, dining
-     -> validated proposals
-  -> conflict detection, targeted revision, HITL and the aggregated plan
+user message
+  -> chat intake: extract an explicit brief patch, re-validate the brief
+     -> LangGraph workflow
+        -> supervisor: choose which specialist tools to call
+           -> itinerary, transport, accommodation, destination guide, dining
+        -> validated proposals
+     -> conflict detection, targeted revision, HITL and the aggregated plan
+  -> a reply written from the plan, in the traveller's language
 ```
 
 A specialist owns a durable role: its model routing, its tools, its output schema and the rules it
@@ -26,6 +28,44 @@ def invoke(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None
 The orchestrator therefore does not need to know whether a specialist reasons with a model or
 computes deterministically, which is what lets transport and accommodation stay as calculators
 while the other three call a model.
+
+## The supervisor boundary
+
+A named supervisor agent decides *which* specialists to call, through one typed tool per
+specialist. Those tools capture this run's brief, memory store and tool gateway when they are
+built, so the supervisor's only freedom is delegation.
+
+That boundary is the whole point. A supervisor free to rewrite trip facts would make the plan
+depend on a model's paraphrase of the request, and the deterministic budget and conflict rules
+downstream would then be validating the paraphrase rather than what the traveller asked for.
+
+Two things guard the result:
+
+- A supervisor may legitimately skip a specialist. Any it skipped is run directly afterwards, so
+  the plan always has all five sections rather than silently losing one.
+- Revision tools are built one per pending request and are immutable: the request already names
+  its target, and a tool that returns a proposal from a different specialist is rejected.
+
+Both loops fall back to running every specialist directly when no model is configured or the loop
+fails, which is why the graph still produces a plan offline. Injecting `specialists` explicitly
+takes the same deterministic path, so a test never depends on a model choosing to call every tool.
+
+## Chat intake
+
+A message is turned into an explicit patch of the trip brief, then the orchestrator re-plans and a
+reply is written from the resulting plan.
+
+Extraction only changes fields the traveller actually stated. Inferring a date, a budget or a
+destination they did not give is worse than asking, because the plan then drifts from the request
+and nothing in the output says so. The prompt says as much, and every field in the model's wire
+schema is nullable so "not mentioned" is expressible.
+
+A bilingual local parser sits behind the model and handles the phrasings the UI suggests, in
+English and Chinese. It runs when no extraction model is configured and when one fails, so the
+conversation works with no API key.
+
+Date ordering is checked once, when the patch is applied. Leaving it to the specialists would mean
+a reversed date range fails five times with five different messages.
 
 ## Two kinds of specialist
 
@@ -62,6 +102,11 @@ accepted.
    so the first attempt has to be close.
 4. **Keep the contracts stable.** `TripBrief`, `AgentProposal`, `ProposalItem` and `TripPlan` are
    the boundary the UI, the workflow and the specialists all agree on.
+5. **Report what you cannot safely fix.** The itinerary checks map travel time between consecutive
+   activities and reports what does not fit as a conflict, rather than shifting the times itself.
+   It cannot see the transport legs on the same day, so a silent reschedule risks moving an
+   activity onto one. A revision that introduces a new geography conflict falls back to the
+   conservative plan and re-checks it.
 
 ## Provider quirks worth knowing
 
@@ -79,6 +124,16 @@ accepted.
 - **MiniMax ignores a forced `tool_choice`.** It answers in prose with no tool call, which is
   indistinguishable from an auth failure at the call site. Only `tool_choice: "auto"` produces a
   well-formed call.
+- **LangSmith keys are regional.** A key issued outside the US is rejected by the default endpoint
+  with a bare `403` on ingest. Tracing failures never stop a run, so the only symptom is an empty
+  project. See [observability](observability.md).
+
+## A note on tool descriptions
+
+LangChain builds a tool's description from its docstring. An f-string docstring is not a docstring
+at all — Python evaluates it as an expression — so the description silently becomes empty and the
+model has nothing to choose between. The delegation tools pass `description=` explicitly, and
+ruff's `B021` catches the mistake if it comes back.
 
 ## Fallbacks
 

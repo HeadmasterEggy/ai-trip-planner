@@ -89,6 +89,7 @@ docs/                               Architecture, orchestration and UI notes
 - [LangGraph orchestration](docs/langgraph-orchestration.md)
 - [Streamlit UI](docs/streamlit-ui.md)
 - [Observability](docs/observability.md)
+- [Debugging log](docs/debugging-log.md) — how the awkward failures were actually found
 
 ## Talking to it
 
