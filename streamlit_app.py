@@ -65,6 +65,13 @@ def _load_cloud_secrets() -> None:
         for key in keys:
             if key in st.secrets and not os.getenv(key):
                 os.environ[key] = str(st.secrets[key])
+        if (
+            os.getenv("LANGSMITH_TRACING")
+            and os.getenv("LANGSMITH_API_KEY")
+            and not os.getenv("LANGSMITH_ENDPOINT")
+        ):
+            # This workspace is hosted in LangSmith's APAC region.
+            os.environ["LANGSMITH_ENDPOINT"] = "https://apac.api.smith.langchain.com"
     except FileNotFoundError:
         # Local development uses .env and has no secrets.toml.
         pass
