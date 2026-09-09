@@ -86,7 +86,10 @@ def _prompt(
     ceiling: float,
     revision: RevisionRequest | None,
 ) -> str:
-    candidates = "\n".join(f"- {p.name} ({p.category})" for p in places) or "- (none)"
+    candidates = (
+        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places)
+        or "- (none)"
+    )
     diet = "; ".join(f"{p.key}={p.value}" for p in dietary) or "none recorded"
     revision_text = (
         (
@@ -103,8 +106,9 @@ def _prompt(
         f"USD {brief.budgetTotal:.2f}.\n"
         f"Confirmed dietary preferences: {diet}.\n"
         f"dailyBudgetPerPersonUsd must be non-negative and at most {ceiling:.2f}.\n\n"
-        "Grounded venue candidates — a pick's name must be one of these copied character for "
-        "character, with no category, rating or district appended. Return no picks rather than "
+        "Grounded venue candidates — a pick's name must equal one candidate's `name` value "
+        "exactly. Copy the name field only, with no category, rating or district appended. "
+        "Return no picks rather than "
         f"inventing a venue that is not listed.\n{candidates}\n\n"
         "Never claim live hours, availability, menu items, allergen safety, halal/kosher "
         "certification or dietary suitability; tell travellers to confirm important dietary "

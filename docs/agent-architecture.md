@@ -48,6 +48,15 @@ accepted.
    — and the validator discards the whole draft when they do. The rule is stated in both places
    because either alone is insufficient: the prompt alone is not binding, and the validator alone
    produces a silent fallback on every round.
+
+   How the candidates are *rendered* matters as much as the instruction. Listing them as
+   `- Mock sight near Osaka (sight)` and then asking for the name "copied exactly" is ambiguous,
+   and the model copies the whole bullet. They are listed as labelled fields instead:
+
+   ```
+   - name: Mock sight near Osaka
+     category: sight
+   ```
 3. **Restate schema limits in the prompt.** Both DeepSeek and MiniMax treat `maxLength` and
    `maxItems` as advisory. Structured-output extraction retries only a few times before giving up,
    so the first attempt has to be close.
@@ -59,6 +68,11 @@ accepted.
 - **DeepSeek rejects LangChain's default json_schema response format** with
   `This response_format type is unavailable now`. Structured output goes through tool calling
   (`method="function_calling"`).
+- **DeepSeek V4's thinking mode then rejects that tool call** with
+  `Thinking mode does not support this tool_choice`, because tool-calling structured output forces
+  a named tool. Thinking is disabled via `extra_body`, not `model_kwargs` — the latter hands the
+  field to the OpenAI SDK as a keyword argument, which it rejects with
+  `Completions.create() got an unexpected keyword argument 'thinking'`.
 - **MiniMax runs two independent account systems.** Mainland-China keys work against
   `api.minimaxi.com` and return `401 invalid api key (2049)` against `api.minimax.io`, and vice
   versa. No GroupId is required.

@@ -95,7 +95,10 @@ def _prompt(
     brief: TripBrief, days: int, places: list[Place], revision: RevisionRequest | None
 ) -> str:
     cap = brief.budgetTotal * ACTIVITY_BUDGET_SHARE
-    candidates = "\n".join(f"- {p.name} ({p.category})" for p in places) or "- (none)"
+    candidates = (
+        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places)
+        or "- (none)"
+    )
     revision_text = (
         f"\n\nRevision to address exactly:\n{revision.reason}\nConstraints: "
         f"{'; '.join(revision.constraints)}"
@@ -111,8 +114,9 @@ def _prompt(
         f"Leave at least {MIN_TRANSFER_MINUTES} minutes between activities at different "
         "locations so the transfer is feasible.\n"
         f"Keep total activity cost for the whole group at or below USD {cap:.2f}.\n\n"
-        "Grounded candidates — an activity location must be one of these names copied character "
-        "for character. Do not append the category, rating or district, and do not reword it: an "
+        "Grounded candidates — an activity location must equal one candidate's `name` value "
+        "exactly. Copy the name field only: never append the category, rating or district, and "
+        "do not reword it. An "
         "activity whose location is not an exact candidate name causes the entire draft to be "
         f"discarded.\n{candidates}\n\n"
         "Hard limits, which the schema also enforces: summary at most 400 characters; each "

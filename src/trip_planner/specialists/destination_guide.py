@@ -109,7 +109,10 @@ def _fallback(brief: TripBrief, month: str, places: list[Place]) -> DestinationG
 def _prompt(
     brief: TripBrief, month: str, places: list[Place], preferences: list[UserPreference]
 ) -> str:
-    candidates = "\n".join(f"- {p.name} ({p.category})" for p in places) or "- (none)"
+    candidates = (
+        "\n".join(f"- name: {p.name}\n  category: {p.category}" for p in places)
+        or "- (none)"
+    )
     prefs = "; ".join(f"{p.key}={p.value}" for p in preferences) or "none recorded"
     return (
         "Write concise destination guidance using only the supplied facts.\n\n"
@@ -117,8 +120,9 @@ def _prompt(
         f"{brief.groupSize} travellers, budget USD {brief.budgetTotal:.2f}"
         f"{f', {brief.nationality} passport' if brief.nationality else ''}.\n"
         f"Travel month: {month}. Confirmed preferences: {prefs}.\n\n"
-        "Grounded attraction candidates — an attraction name must be one of these copied "
-        "character for character, with no category, rating or district appended. Return no "
+        "Grounded attraction candidates — an attraction name must equal one candidate's `name` "
+        "value exactly. Copy the name field only, with no category, rating or district "
+        "appended. Return no "
         f"attractions if the list is empty.\n{candidates}\n\n"
         "Describe weather as typical monthly planning context, never a forecast. Do not state "
         "that a traveller is eligible to enter, that a vaccine is required, or that an area is "

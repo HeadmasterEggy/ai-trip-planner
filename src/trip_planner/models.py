@@ -13,6 +13,8 @@ were expensive to find:
   specialists restate their hard limits in the prompt as well.
 - DeepSeek rejects LangChain's default json_schema response format, so
   structured output goes through tool calling instead.
+- DeepSeek V4's thinking mode then rejects the forced tool_choice that tool
+  calling uses, so thinking is disabled on every structured call.
 """
 
 from __future__ import annotations
@@ -51,8 +53,14 @@ def create_routed_chat_model(task: str) -> ChatOpenAI | None:
             return None
         return ChatOpenAI(
             api_key=api_key,
-            model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
             temperature=0,
+            # DeepSeek V4 answers "Thinking mode does not support this
+            # tool_choice" when structured output forces a named tool, which is
+            # every structured call this app makes. This is a DeepSeek-specific
+            # field, so it travels in extra_body: model_kwargs would hand it to
+            # the OpenAI SDK as a keyword argument, which it rejects.
+            extra_body={"thinking": {"type": "disabled"}},
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         )
 
