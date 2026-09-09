@@ -54,6 +54,7 @@ def _load_cloud_secrets() -> None:
             # This workspace is hosted in LangSmith's APAC region. Override a
             # stale/default US value that may exist in Streamlit secrets.
             os.environ["LANGSMITH_ENDPOINT"] = "https://apac.api.smith.langchain.com"
+            os.environ["LANGCHAIN_ENDPOINT"] = "https://apac.api.smith.langchain.com"
     except FileNotFoundError:
         # Local development uses .env and has no secrets.toml.
         pass
