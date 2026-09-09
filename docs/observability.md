@@ -8,7 +8,20 @@ Tracing is environment-driven; no code changes are needed to turn it on.
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=lsv2_pt_...
 LANGSMITH_PROJECT=ai-trip-planner
+LANGSMITH_ENDPOINT=https://apac.api.smith.langchain.com
 ```
+
+**The endpoint is not optional outside the US.** LangSmith keys are regional, and a key issued in
+one region is rejected by the others with a bare `403 Forbidden` on ingest. Tracing failures do not
+stop a run — the plan still completes — so a misconfigured region looks like silence rather than an
+error, and an empty project is the only symptom. Match the endpoint to the host in your LangSmith
+URL:
+
+| Region | Endpoint |
+| --- | --- |
+| US (default) | `https://api.smith.langchain.com` |
+| EU | `https://eu.api.smith.langchain.com` |
+| APAC | `https://apac.api.smith.langchain.com` |
 
 Each run produces one trace tree: every LangGraph node, every specialist per round, and every model
 call with its inputs, outputs and token counts.
