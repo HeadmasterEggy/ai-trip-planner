@@ -24,22 +24,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 from dotenv import load_dotenv
 
-from trip_planner.contracts import TripBrief, TripPlan
-from trip_planner.models import MODEL_ROUTING
-from trip_planner.specialists import ALL_SPECIALISTS
-from trip_planner.workflow import OrchestratorOptions, ProgressEvent, run_orchestrator
-
-st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
 load_dotenv()
-
-LABELS = {s.name: s.label for s in ALL_SPECIALISTS}
-STATUS_TEXT = {
-    "queued": "Queued",
-    "agent_started": "Running",
-    "agent_completed": "Complete",
-    "agent_failed": "Needs attention",
-}
-
 
 def _load_cloud_secrets() -> None:
     """Copy supported Streamlit secrets into the environment when present.
@@ -75,6 +60,21 @@ def _load_cloud_secrets() -> None:
 
 
 _load_cloud_secrets()
+
+from trip_planner.contracts import TripBrief, TripPlan
+from trip_planner.models import MODEL_ROUTING
+from trip_planner.specialists import ALL_SPECIALISTS
+from trip_planner.workflow import OrchestratorOptions, ProgressEvent, run_orchestrator
+
+st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
+
+LABELS = {s.name: s.label for s in ALL_SPECIALISTS}
+STATUS_TEXT = {
+    "queued": "Queued",
+    "agent_started": "Running",
+    "agent_completed": "Complete",
+    "agent_failed": "Needs attention",
+}
 
 if "plan" not in st.session_state:
     st.session_state.plan = None
