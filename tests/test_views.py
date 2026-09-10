@@ -190,3 +190,12 @@ def test_views_escape_their_input():
     assert "<img" not in html
     assert "&lt;script&gt;" in html
     assert "&lt;img" in html
+
+
+def test_the_timeline_names_the_owner_as_well_as_colouring_it(plan):
+    """Colour alone is unreadable in print and to some readers."""
+    html = timeline(plan)
+    labels = {section.id: section.label for section in plan.sections}
+    owners = set(re.findall(r'class="tp-tl__owner">([^<]+)<', html))
+    assert owners, "no owner labels rendered"
+    assert owners <= {escape(label, quote=True) for label in labels.values()}

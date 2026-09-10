@@ -86,7 +86,26 @@ def agent_row(label: str, state: str, round_no: int, error: str | None) -> str:
     )
 
 
+def _how(plan: TripPlan, section_id: str) -> str:
+    """One line saying how a section was produced: path, route, time."""
+    trace = next((t for t in plan.traces if t.agent == section_id), None)
+    if trace is None:
+        return ""
+    parts = [trace.source]
+    route = trace.evidence.get("route")
+    if route:
+        parts.append(route)
+    if trace.seconds is not None:
+        parts.append(f"{trace.seconds:.2f}s")
+    return f"*How: {' · '.join(parts)}*"
+
+
 def plan_markdown(plan: TripPlan) -> str:
+    """The plan as a document, with the parts that make it safe to act on.
+
+    The screen shows assumptions, the negotiation and what still needs a decision;
+    an export that dropped them was a different document from the one being reviewed.
+    """
     lines = [
         f"# Trip plan — {plan.brief.destination}",
         "",
@@ -97,14 +116,40 @@ def plan_markdown(plan: TripPlan) -> str:
         ),
         "",
     ]
+
+    pending = [checkpoint for checkpoint in plan.hitl if checkpoint.status == "pending"]
+    if pending:
+        lines += ["## Needs your decision", ""]
+        lines += [f"- **{c.title}** — {c.detail}" for c in pending]
+        lines.append("")
+
     for section in plan.sections:
         lines += [f"## {section.label} — USD {section.estCost:,.2f}", "", section.summary, ""]
+        how = _how(plan, section.id)
+        if how:
+            lines += [how, ""]
         for item in section.proposal.items if section.proposal else []:
             when = f"Day {item.day} " if item.day else ""
             when += f"{item.startTime}–{item.endTime} " if item.startTime else ""
             cost = f" (USD {item.estCost:,.2f})" if item.estCost else ""
             lines.append(f"- {when}{item.location or item.kind}{cost}: {item.detail}")
+        assumptions = section.proposal.assumptions if section.proposal else []
+        if assumptions:
+            lines += ["", "*Assumptions and caveats*", ""]
+            lines += [f"- {note}" for note in assumptions]
         lines.append("")
+
+    if plan.negotiation:
+        lines += ["## Negotiation", ""]
+        for entry in plan.negotiation:
+            if not entry.conflicts:
+                lines.append(f"- Round {entry.round}: no conflicts.")
+                continue
+            for request in entry.conflicts:
+                lines.append(f"- Round {entry.round}: **{request.targetAgent}** — {request.reason}")
+                lines += [f"  - {constraint}" for constraint in request.constraints]
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -137,10 +182,12 @@ def timeline(plan: TripPlan) -> str:
     days = scheduled_days(plan)
     if not days:
         return '<p class="tp-note">No dated items yet.</p>'
+    owners = {section.id: section.label for section in plan.sections}
     blocks = []
     for day, entries in days.items():
         rows = []
         for agent, item in entries:
+            owner = owners.get(agent, agent)
             when = (
                 f"{_esc(item.startTime)}–{_esc(item.endTime)}"
                 if item.startTime and item.endTime
@@ -151,6 +198,9 @@ def timeline(plan: TripPlan) -> str:
                 f'<div class="tp-tl__row tp-tl__row--{_esc(agent)}">'
                 f'<span class="tp-tl__when">{when}</span>'
                 f'<span class="tp-tl__what"><strong>{_esc(item.location or item.kind)}</strong>'
+                # The owner was only the border colour: unreadable in print, invisible
+                # to a reader who cannot separate the four hues.
+                f'<span class="tp-tl__owner">{_esc(owner)}</span>'
                 f'<br><span class="tp-note">{_esc(item.detail[:110])}</span></span>'
                 f'<span class="tp-tl__cost">{cost}</span>'
                 "</div>"

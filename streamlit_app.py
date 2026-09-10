@@ -125,9 +125,7 @@ def render_brief_form() -> TripBrief | None:
             total = st.number_input("Budget (USD)", 100, value=int(brief.budgetTotal), step=100)
         with nationality:
             passport = st.text_input("Passport", value=brief.nationality or "")
-        submitted = st.form_submit_button(
-            "Plan this trip", type="primary", use_container_width=True
-        )
+        submitted = st.form_submit_button("Plan this trip", type="primary", width="stretch")
     if not submitted:
         return None
     if not destination.strip():
@@ -188,7 +186,7 @@ with st.sidebar:
         st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
 
     st.divider()
-    if st.button("Start a new trip", use_container_width=True):
+    if st.button("Start a new trip", width="stretch"):
         st.session_state.plan = None
         st.session_state.brief = demo_brief().model_copy(
             update={"userId": st.session_state.user_id}
@@ -213,7 +211,7 @@ with plan_column:
         "›" if st.session_state.show_plan else "‹",
         key="toggle-plan",
         help="Hide the trip plan" if st.session_state.show_plan else "Show the trip plan",
-        use_container_width=not st.session_state.show_plan,
+        width="content" if st.session_state.show_plan else "stretch",
     ):
         st.session_state.show_plan = not st.session_state.show_plan
         st.rerun()
@@ -263,7 +261,7 @@ def render_decisions(plan: TripPlan) -> None:
                 key=f"confirm-{checkpoint.id}",
                 type="primary",
                 disabled=disabled,
-                use_container_width=True,
+                width="stretch",
             ):
                 with st.spinner("Re-planning around your choice…"):
                     st.session_state.plan = apply_decision(
@@ -287,7 +285,7 @@ def render_escalation() -> None:
             option["label"],
             key=f"escalation-{option['value']}",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
             # `plan_trip` reads the paused thread id from session state and clears
             # it after the resume, so it must not be cleared here: otherwise the
@@ -357,9 +355,11 @@ def render_plan(plan: TripPlan) -> None:
         st.caption("Colour marks the owning specialist. Transport legs are fixed; activities move.")
 
     with detail_tab:
-        st.markdown("**Where the money goes**")
-        st.markdown(budget_breakdown(plan), unsafe_allow_html=True)
-        st.divider()
+        breakdown = budget_breakdown(plan)
+        if breakdown:  # a heading with nothing under it reads as a bug
+            st.markdown("**Where the money goes**")
+            st.markdown(breakdown, unsafe_allow_html=True)
+            st.divider()
         for section in plan.sections:
             header = f"{section.label} — ${section.estCost:,.2f}"
             with st.expander(header, expanded=section.status == "needs_you"):
@@ -386,7 +386,7 @@ def render_plan(plan: TripPlan) -> None:
         data=plan_markdown(plan),
         file_name="trip-plan.md",
         mime="text/markdown",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -483,7 +483,7 @@ with chat_column:
         # language of the request.
         st.caption("Ask for a change in plain language. Try one of these:")
         for index, example in enumerate(EXAMPLES):
-            if st.button(example, key=f"example-{index}", use_container_width=True):
+            if st.button(example, key=f"example-{index}", width="stretch"):
                 st.session_state.pending = example
                 st.rerun()
 

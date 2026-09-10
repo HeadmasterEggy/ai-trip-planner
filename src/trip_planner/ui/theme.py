@@ -164,6 +164,11 @@ CSS = """
 }
 .tp-tl__what { flex: 1; min-width: 0; }
 .tp-tl__cost { font-variant-numeric: tabular-nums; font-weight: 600; }
+/* The owner as text, so the row still says who it belongs to without its colour. */
+.tp-tl__owner {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--tp-text-mut); margin-left: 6px;
+}
 
 /* Budget breakdown: a single total says a plan is over; this says who by. */
 .tp-bd__row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px; }
