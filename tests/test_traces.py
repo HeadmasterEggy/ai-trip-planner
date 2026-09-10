@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import trip_planner.specialists.itinerary as itinerary_module
+from trip_planner.contracts import RevisionRequest
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.memory import InMemoryStore
+from trip_planner.ports import AgentContext, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
+from trip_planner.tools.booking import MockBooking
+from trip_planner.tools.maps import MapsAdapter
 from trip_planner.ui.render import trace_block
 from trip_planner.workflow import OrchestratorOptions, run_orchestrator
 
@@ -75,3 +80,60 @@ def test_the_rendered_trace_escapes_its_input():
 
 def test_an_untraced_specialist_says_so():
     assert "No reasoning was recorded" in trace_block([], "dining")
+
+
+def test_a_revision_that_falls_back_is_traced_as_a_fallback(monkeypatch):
+    """The trace and the proposal must tell the same story.
+
+    When a revision's model draft still had a geography conflict, the plan was
+    silently replaced by the fallback but the trace had already been recorded as
+    "model" -- so the one view that exists to expose a fallback hid it.
+    """
+    adapter = MapsAdapter()
+    sight = adapter.places(near=DEMO_BRIEF.destination, category="sight")[0].name
+    other = adapter.places(near=DEMO_BRIEF.destination, category="neighborhood")[0].name
+    draft = itinerary_module.ItineraryDraft(
+        summary="A model draft that cannot be scheduled.",
+        activities=[
+            # 30 minutes apart, but the mock port needs 140 to travel between them.
+            itinerary_module.DraftActivity(
+                day=1,
+                startTime="09:00",
+                endTime="10:00",
+                location=sight,
+                detail="First stop.",
+                estCost=10,
+            ),
+            itinerary_module.DraftActivity(
+                day=1,
+                startTime="10:30",
+                endTime="11:30",
+                location=other,
+                detail="Second stop.",
+                estCost=10,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        itinerary_module, "create_structured_invoker", lambda *a, **k: lambda prompt: draft
+    )
+
+    ctx = AgentContext(
+        tripId="t1",
+        round=2,
+        tools=ToolGateway(maps=adapter, booking=MockBooking()),
+        mem=InMemoryStore(),
+    )
+    revision = RevisionRequest(
+        tripId="t1",
+        targetAgent="itinerary",
+        reason="time overlap on day 1",
+        constraints=["keep clear of 09:00-10:00, held by transport"],
+    )
+    proposal = itinerary_module.itinerary_specialist.invoke(DEMO_BRIEF, ctx, revision)
+
+    trace = ctx.extras["traces"][-1]
+    assert trace.source == "deterministic fallback"
+    assert trace.fallbackReason and "geography conflict" in trace.fallbackReason
+    assert proposal.assumptions[0] == "Planner source: deterministic fallback."
+    assert proposal.conflictsWith == []

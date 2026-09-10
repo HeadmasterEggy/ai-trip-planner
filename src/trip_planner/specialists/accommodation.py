@@ -18,9 +18,10 @@ from ..contracts import (
     RevisionRequest,
     TripBrief,
     UserPreference,
+    cities,
 )
 from ..ports import AgentContext, StayOption
-from .base import FunctionSpecialist, cities, is_budget_revision, record_trace
+from .base import FunctionSpecialist, is_budget_revision, record_trace
 
 GUESTS_PER_ROOM = 2
 

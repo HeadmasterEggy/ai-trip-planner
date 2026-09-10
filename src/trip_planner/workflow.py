@@ -40,6 +40,7 @@ from .contracts import (
     TripBrief,
     TripPlan,
     TripSection,
+    brief_problem,
 )
 from .memory import memory as default_memory
 from .ports import AgentContext, ToolGateway
@@ -462,6 +463,11 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
 
 
 def run_orchestrator(brief: TripBrief, options: OrchestratorOptions | None = None) -> TripPlan:
+    problem = brief_problem(brief)
+    if problem:
+        # Refused before any specialist runs, so the caller gets one reason
+        # instead of a graph that fails four agents deep.
+        raise ValueError(problem)
     result = create_orchestrator_graph(options).invoke({"brief": brief})
     plan = result.get("plan")
     if plan is None:

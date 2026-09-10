@@ -46,7 +46,10 @@ looking at, so this is the view that makes its work legible.
 which section is driving the total. A single budget bar says a plan is over; it
 does not say who to argue with, which is the only actionable question.
 
-**Steps** numbers the plan in the order a traveller settles it, marking what still needs them.
+**Steps** numbers the plan in the order a traveller settles it, marking what still needs them and
+what a confirmed choice has already settled. The state is computed by `ui.render.step_states`, not
+in the entry point, so the choice-to-step join is covered by tests: a checkpoint reaches its section
+through `preferenceKey`, which is the only field the two share.
 
 **Negotiation** is round by round: what was found, who was sent back, and the
 exact constraint they received. The orchestrator discards this once it has a

@@ -68,6 +68,29 @@ def test_impossible_dates_are_rejected_once_not_five_times():
         )
 
 
+def test_a_multi_city_trip_shorter_than_its_cities_is_refused_here():
+    """The "&" convention is only plannable with a night per city.
+
+    It used to be discovered inside the accommodation specialist, after the
+    other four had run, so the traveller saw an internal error instead of a
+    reason they could act on.
+    """
+    with pytest.raises(ValueError, match="2 destinations need at least 2 nights"):
+        apply_brief_patch(
+            DEMO_BRIEF, BriefPatch(dates=("2026-06-15", "2026-06-16")), DEMO_BRIEF.tripId
+        )
+
+
+def test_a_single_city_trip_still_works_on_one_night():
+    after = apply_brief_patch(
+        DEMO_BRIEF,
+        BriefPatch(destination="Kyoto", dates=("2026-06-15", "2026-06-16")),
+        DEMO_BRIEF.tripId,
+    )
+    assert after.destination == "Kyoto"
+    assert after.dates == ("2026-06-15", "2026-06-16")
+
+
 def test_a_chat_turn_replans_and_records_both_sides():
     mem = InMemoryStore()
     response = run_trip_chat(

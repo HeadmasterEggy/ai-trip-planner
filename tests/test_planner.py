@@ -9,11 +9,12 @@ from __future__ import annotations
 import pytest
 
 from trip_planner.budget import assess_budget, cost_of, sum_usd
-from trip_planner.contracts import AgentProposal, ProposalItem, TripBrief
+from trip_planner.contracts import AgentProposal, ProposalItem, TripBrief, brief_problem
 from trip_planner.memory import InMemoryStore
 from trip_planner.ports import AgentContext, Place, RouteLeg, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.specialists.accommodation import split_stay
+from trip_planner.specialists.itinerary import ACTIVITY_BUDGET_SHARE, DEFAULT_ACTIVITY_COST_USD
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
 from trip_planner.workflow import (
@@ -74,6 +75,50 @@ def test_multi_city_stay_splits_into_contiguous_segments(brief):
     segments = split_stay(brief)
     assert [(s.city, s.nights) for s in segments] == [("Tokyo", 4), ("Kyoto", 3)]
     assert segments[0].checkOut == segments[1].checkIn
+
+
+def test_an_unplannable_brief_is_refused_before_any_specialist_runs(brief):
+    """The orchestrator checks feasibility up front, so a caller gets one
+    reason rather than a failure four agents deep."""
+    events: list[ProgressEvent] = []
+    one_night = brief.model_copy(update={"dates": ("2026-06-15", "2026-06-16")})
+
+    with pytest.raises(ValueError, match="at least 2 nights"):
+        run_orchestrator(one_night, OrchestratorOptions(on_progress=events.append))
+    assert events == []
+
+
+def test_brief_problem_reports_rather_than_raises(brief):
+    """Callers treat it as a check, so it must answer for every input."""
+    assert brief_problem(brief) is None
+    assert brief_problem(brief.model_copy(update={"destination": ""}))
+    assert brief_problem(brief.model_copy(update={"destination": "   "}))
+    assert "real dates" in brief_problem(
+        brief.model_copy(update={"dates": ("2026-6-15", "2026-06-22")})
+    )
+
+
+def test_the_offline_itinerary_respects_the_activity_cap(brief):
+    """The deterministic fallback is the path CI and a key-less deployment
+    always take, so it has to obey the cap the model prompt is held to.
+
+    A flat USD 60 per day ignored it: a three-day trip on USD 300 produced USD
+    180 of activities against a USD 120 cap.
+    """
+    tight = brief.model_copy(update={"budgetTotal": 300, "dates": ("2026-06-15", "2026-06-18")})
+    plan = run_orchestrator(tight, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1))
+    activities = next(s.estCost for s in plan.sections if s.id == "itinerary")
+
+    assert activities > 0
+    assert activities <= 300 * ACTIVITY_BUDGET_SHARE
+    assert activities == round(300 * ACTIVITY_BUDGET_SHARE, 2)  # the cap, not a flat guess
+
+
+def test_a_comfortable_budget_still_gets_the_plain_daily_estimate(brief):
+    """Clamping must not turn the fallback into a budget-spending target."""
+    plan = run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1))
+    activities = next(s.estCost for s in plan.sections if s.id == "itinerary")
+    assert activities == 7 * DEFAULT_ACTIVITY_COST_USD
 
 
 def test_every_specialist_produces_a_valid_proposal_without_a_model_key(brief, ctx):

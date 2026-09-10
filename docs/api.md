@@ -59,6 +59,12 @@ plan = run_orchestrator(
 | `max_rounds` | Negotiation round limit; default 3. |
 | `on_progress` | Called as each specialist starts, completes or fails. |
 
+The brief is checked before any of that runs. `contracts.brief_problem(brief)` returns a
+traveller-facing reason, or `None`, and `run_orchestrator` raises `ValueError` with it rather than
+letting a specialist discover the problem four agents deep. The form and chat intake call the same
+function, so all three paths refuse an impossible trip — an end before its start, or more cities in
+the `&`-separated destination than the trip has nights — with one message.
+
 ## What comes back
 
 `TripPlan` is the aggregate the UI renders:

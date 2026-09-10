@@ -10,7 +10,7 @@ falls back to deterministic output.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -27,6 +27,30 @@ AGENT_NAMES = (
 AgentName = Literal["itinerary", "transport", "accommodation", "destination-guide", "dining"]
 
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def cities(destination: str) -> list[str]:
+    """Parse the ampersand-separated destination convention."""
+    result = [c.strip() for c in destination.split("&") if c.strip()]
+    if not result:
+        raise ValueError("At least one destination is required.")
+    return result
+
+
+def _iso_date(value: str) -> date | None:
+    """A real, zero-padded ISO date, or None.
+
+    `date.fromisoformat` also accepts the basic `YYYYMMDD` form, which would
+    make a malformed brief look valid here and fail somewhere less obvious.
+    """
+    if not ISO_DATE.match(value):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == value else None
 
 
 class TripBrief(BaseModel):
@@ -39,6 +63,33 @@ class TripBrief(BaseModel):
     groupSize: Annotated[int, Field(gt=0)]
     budgetTotal: Annotated[float, Field(gt=0)]
     nationality: str | None = None
+
+
+def brief_problem(brief: TripBrief) -> str | None:
+    """Why this brief cannot be planned, or None when it can.
+
+    One place decides feasibility, and everyone asks it: the form, chat intake
+    and the orchestrator. The alternative is what happened before -- a brief
+    with more cities than nights failed inside the accommodation specialist,
+    after the other four had already run, and the traveller got an internal
+    error instead of a reason.
+    """
+    start, end = _iso_date(brief.dates[0]), _iso_date(brief.dates[1])
+    if start is None or end is None:
+        return "Trip dates must be real dates in YYYY-MM-DD format."
+    if end <= start:
+        return "Trip end date must be after the start date."
+    nights = (end - start).days
+    try:
+        names = cities(brief.destination)
+    except ValueError as error:
+        return str(error)
+    if nights < len(names):
+        return (
+            f"{len(names)} destinations need at least {len(names)} nights; "
+            f"this trip is {nights} night(s) long."
+        )
+    return None
 
 
 class ProposalItem(BaseModel):

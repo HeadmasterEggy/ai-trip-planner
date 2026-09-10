@@ -25,7 +25,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from trip_planner.chat import run_trip_chat
-from trip_planner.contracts import ChatRequest, TripBrief, TripPlan
+from trip_planner.contracts import ChatRequest, TripBrief, TripPlan, brief_problem
 from trip_planner.decisions import apply_decision
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.models import MODEL_ROUTING
@@ -40,7 +40,7 @@ from trip_planner.ui.render import (
     negotiation_verdict,
     plan_markdown,
     proposal_items,
-    step_row,
+    steps,
     timeline,
     trace_block,
 )
@@ -122,12 +122,7 @@ def render_brief_form() -> TripBrief | None:
     if not destination.strip():
         st.error("Enter a destination.")
         return None
-    if end <= start:
-        st.error("The end date must be after the start date.")
-        return None
-    if start < today:
-        st.warning("That start date is in the past; planning it anyway.")
-    return TripBrief(
+    brief = TripBrief(
         tripId=st.session_state.trip_id,
         destination=destination.strip(),
         dates=(start.isoformat(), end.isoformat()),
@@ -135,6 +130,15 @@ def render_brief_form() -> TripBrief | None:
         budgetTotal=float(total),
         nationality=passport.strip() or None,
     )
+    # The same check the chat path and the orchestrator run, so a form mistake
+    # is reported here rather than surfacing as a failed planning run.
+    problem = brief_problem(brief)
+    if problem:
+        st.error(problem)
+        return None
+    if start < today:
+        st.warning("That start date is in the past; planning it anyway.")
+    return brief
 
 
 with st.sidebar:
@@ -277,22 +281,6 @@ def render_reasoning(plan: TripPlan) -> None:
                     st.markdown(f"- {note}")
 
 
-def render_steps(plan: TripPlan) -> None:
-    """The plan as numbered steps, in the order a traveller settles them."""
-    decided = {c.id: c.status for c in plan.hitl if c.type == "confirm_choice"}
-    rows = []
-    for number, section in enumerate(plan.sections, start=1):
-        if section.status == "needs_you":
-            state = "todo"
-        elif any(v == "approved" for k, v in decided.items() if section.id in k):
-            state = "done"
-        else:
-            state = "open"
-        cost = f" · ${section.estCost:,.0f}" if section.estCost else ""
-        rows.append(step_row(number, f"{section.label}{cost}", section.summary[:90], state))
-    st.markdown("".join(rows), unsafe_allow_html=True)
-
-
 VERDICT_STYLE = {
     "converged": st.success,
     "stuck": st.warning,
@@ -318,7 +306,7 @@ def render_plan(plan: TripPlan) -> None:
     )
 
     with steps_tab:
-        render_steps(plan)
+        st.markdown(steps(plan), unsafe_allow_html=True)
 
     with day_tab:
         # Everything scheduled, from every specialist, on one axis. A transport

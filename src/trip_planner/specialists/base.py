@@ -47,14 +47,6 @@ def trip_days(dates: tuple[str, str]) -> int:
     return days
 
 
-def cities(destination: str) -> list[str]:
-    """Parse the demo's ampersand-separated destination convention."""
-    result = [c.strip() for c in destination.split("&") if c.strip()]
-    if not result:
-        raise ValueError("At least one destination is required.")
-    return result
-
-
 def clock(total_minutes: int) -> str:
     if total_minutes < 0 or total_minutes >= 24 * 60:
         raise ValueError("A leg cannot fit inside one planning day.")

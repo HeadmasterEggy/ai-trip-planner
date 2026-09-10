@@ -14,6 +14,9 @@ negotiated, act on what needs a decision, and take the plan with you.
    around, and it outranks a later budget revision.
 7. Budget negotiation that asks for the actual shortfall, apportioned by share of the spend, and
    stops as soon as a revision changes nothing rather than spending the remaining rounds.
+8. Brief feasibility checked once, up front (`contracts.brief_problem`): the form, chat intake and
+   the orchestrator all ask it, so an unplannable brief is refused with a reason instead of failing
+   inside a specialist after the other four have run.
 
 ## Next
 

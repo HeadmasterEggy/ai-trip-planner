@@ -23,6 +23,10 @@ from .base import FunctionSpecialist, record_trace, trip_days
 # Activities may claim at most this share of the trip budget, leaving room for
 # transport, stay and meals.
 ACTIVITY_BUDGET_SHARE = 0.4
+# What one anchored activity per day costs when the budget is comfortable. A
+# flat figure alone ignored the cap above, so a tight budget went straight to
+# escalation on the one path that always runs offline.
+DEFAULT_ACTIVITY_COST_USD = 60.0
 MIN_TRANSFER_MINUTES = 150
 
 
@@ -88,13 +92,21 @@ def _validate(draft: ItineraryDraft, days: int, places: list[Place]) -> Itinerar
 
 
 def _fallback(brief: TripBrief, days: int, places: list[Place]) -> ItineraryDraft:
-    """One anchored activity per day, drawn only from grounded candidates."""
+    """One anchored activity per day, drawn only from grounded candidates.
+
+    The daily estimate is clamped to the same share of the budget the model
+    prompt is held to, so the deterministic path cannot spend more than the
+    model was allowed to.
+    """
     if not places:
         return ItineraryDraft(
             summary=f"No grounded activity candidates were available for {brief.destination}.",
             activities=[],
             assumptions=["The maps port returned no candidates; no activity was invented."],
         )
+    per_day = round(
+        min(DEFAULT_ACTIVITY_COST_USD, brief.budgetTotal * ACTIVITY_BUDGET_SHARE / days), 2
+    )
     activities = [
         DraftActivity(
             day=day,
@@ -105,7 +117,7 @@ def _fallback(brief: TripBrief, days: int, places: list[Place]) -> ItineraryDraf
                 f"{places[(day - 1) % len(places)].name}: suggested stop; confirm timing and "
                 "suitability before visiting."
             ),
-            estCost=60.0,
+            estCost=per_day,
         )
         for day in range(1, days + 1)
     ]
@@ -177,6 +189,19 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             print(f"[itinerary] Model draft failed; using a safe local plan: {error}")
             draft = _fallback(brief, days, grounded)
 
+    conflicts = travel_conflicts(draft, ctx)
+    if revision is not None and conflicts:
+        # A revision must not carry a newly discovered geography conflict
+        # forward. Fall back to the conservative plan and re-check it.
+        reason = "revision still conflicted: " + "; ".join(conflicts)
+        fallback_reason = f"{fallback_reason}; {reason}" if fallback_reason else reason
+        draft = _fallback(brief, days, grounded)
+        source = "deterministic fallback"
+        conflicts = travel_conflicts(draft, ctx)
+
+    # Recorded last, after any fallback: the trace is the only record of how the
+    # section was produced, so it must not credit a model draft the proposal
+    # itself says was thrown away.
     record_trace(
         ctx,
         "itinerary",
@@ -190,14 +215,6 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         revision=revision,
         fallback_reason=fallback_reason,
     )
-
-    conflicts = travel_conflicts(draft, ctx)
-    if revision is not None and conflicts:
-        # A revision must not carry a newly discovered geography conflict
-        # forward. Fall back to the conservative plan and re-check it.
-        draft = _fallback(brief, days, grounded)
-        source = "deterministic fallback"
-        conflicts = travel_conflicts(draft, ctx)
 
     items = [
         ProposalItem(

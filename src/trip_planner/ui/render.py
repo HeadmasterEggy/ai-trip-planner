@@ -7,6 +7,8 @@ can be unit-tested by asserting on the HTML they return.
 from __future__ import annotations
 
 import html
+from dataclasses import dataclass
+from typing import Literal
 
 from ..contracts import AgentProposal, ProposalItem, TripPlan
 from .theme import STATUS_LABEL
@@ -261,6 +263,52 @@ def step_row(number: int, title: str, detail: str, state: str) -> str:
         f'<span class="tp-step__body"><strong>{_esc(title)}</strong>'
         f'<br><span class="tp-note">{_esc(detail)}</span></span>'
         "</div>"
+    )
+
+
+@dataclass(frozen=True)
+class StepState:
+    """One row of the settlement checklist, before it becomes HTML."""
+
+    sectionId: str
+    title: str
+    detail: str
+    state: Literal["done", "todo", "open"]
+
+
+def step_states(plan: TripPlan) -> list[StepState]:
+    """The plan as steps, in the order a traveller settles them.
+
+    A choice checkpoint is joined to its section through `preferenceKey`
+    (`accommodation.stayChoice.Kyoto` belongs to `accommodation`). Matching the
+    checkpoint *id* against a section id never hit anything, so a confirmed
+    choice left its step looking untouched.
+    """
+    settled = {
+        checkpoint.preferenceKey
+        for checkpoint in plan.hitl
+        if checkpoint.type == "confirm_choice"
+        and checkpoint.status == "approved"
+        and checkpoint.preferenceKey
+    }
+    rows = []
+    for section in plan.sections:
+        if section.status == "needs_you":
+            state: Literal["done", "todo", "open"] = "todo"
+        elif any(key.startswith(f"{section.id}.") for key in settled):
+            state = "done"
+        else:
+            state = "open"
+        cost = f" · ${section.estCost:,.0f}" if section.estCost else ""
+        rows.append(StepState(section.id, f"{section.label}{cost}", section.summary[:90], state))
+    return rows
+
+
+def steps(plan: TripPlan) -> str:
+    """The whole checklist as HTML, numbered in plan order."""
+    return "".join(
+        step_row(number, row.title, row.detail, row.state)
+        for number, row in enumerate(step_states(plan), start=1)
     )
 
 

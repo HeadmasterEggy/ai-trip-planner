@@ -15,18 +15,23 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .contracts import ChatRequest, ChatResponse, ChatTurn, TripBrief, TripPlan
+from .contracts import (
+    ChatRequest,
+    ChatResponse,
+    ChatTurn,
+    TripBrief,
+    TripPlan,
+    brief_problem,
+)
 from .demo import DEMO_BRIEF
 from .memory import memory as default_memory
 from .models import create_routed_chat_model
 from .workflow import OrchestratorOptions, run_orchestrator
 
-ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PATCH_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
 
 
@@ -52,15 +57,6 @@ class _ModelPatch(BaseModel):
     groupSize: int | None = None
     budgetTotal: float | None = None
     nationality: str | None = None
-
-
-def _valid_date(value: str) -> bool:
-    if not ISO_DATE.match(value):
-        return False
-    try:
-        return date.fromisoformat(value).isoformat() == value
-    except ValueError:
-        return False
 
 
 def _amount(value: str) -> float | None:
@@ -168,16 +164,15 @@ def extract_brief_patch_locally(message: str) -> BriefPatch:
 def apply_brief_patch(current: TripBrief, patch: BriefPatch, trip_id: str) -> TripBrief:
     """Merge a patch and re-validate the whole brief.
 
-    Date ordering is checked here rather than in the specialists: a brief with
-    an end before its start would otherwise fail five times with five different
-    messages.
+    Feasibility is checked here rather than in the specialists: a brief with an
+    end before its start, or with more cities than nights, would otherwise fail
+    deep inside a run with a message meant for a developer.
     """
     updates = patch.model_dump(exclude_none=True)
     nxt = TripBrief(**{**current.model_dump(), **updates, "tripId": trip_id})
-    if not _valid_date(nxt.dates[0]) or not _valid_date(nxt.dates[1]):
-        raise ValueError("Trip dates must be real dates in YYYY-MM-DD format.")
-    if date.fromisoformat(nxt.dates[1]) <= date.fromisoformat(nxt.dates[0]):
-        raise ValueError("Trip end date must be after the start date.")
+    problem = brief_problem(nxt)
+    if problem:
+        raise ValueError(problem)
     return nxt
 
 

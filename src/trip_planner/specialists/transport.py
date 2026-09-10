@@ -7,11 +7,10 @@ so the orchestrator can detect overlaps against itinerary activities.
 
 from __future__ import annotations
 
-from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief
+from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, cities
 from ..ports import AgentContext
 from .base import (
     FunctionSpecialist,
-    cities,
     clock,
     is_budget_revision,
     is_schedule_revision,
