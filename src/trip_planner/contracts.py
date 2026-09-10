@@ -173,6 +173,19 @@ class ChoiceOption(BaseModel):
     recommended: bool = False
 
 
+def merge_choices(
+    left: dict[str, list[ChoiceOption]] | None,
+    right: dict[str, list[ChoiceOption]] | None,
+) -> dict[str, list[ChoiceOption]]:
+    """Reducer for the per-city candidate lists: the later writer wins per city.
+
+    Two graphs carry `stay_choices` as a state channel (the supervisor's nested
+    agent and the outer workflow), each with this reducer, so a specialist that
+    runs in a later round or on another thread cannot drop an earlier city.
+    """
+    return {**(left or {}), **(right or {})}
+
+
 class HitlCheckpoint(BaseModel):
     """A point where the flow pauses for the human, or escalates to them."""
 

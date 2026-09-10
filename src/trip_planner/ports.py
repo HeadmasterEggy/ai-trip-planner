@@ -73,7 +73,14 @@ class ToolGateway:
 
 @dataclass
 class AgentContext:
-    """Everything a specialist is allowed to reach outside its own prompt."""
+    """Everything a specialist is allowed to reach outside its own prompt.
+
+    `extras` is a per-invocation return channel, not a store: the caller passes a
+    fresh dict and turns what the specialist wrote into graph state (`traces`,
+    `stay_choices`). Keeping it per-invocation is what makes "what did this
+    specialist report" a value rather than a subtraction from a run-long
+    accumulator.
+    """
 
     tripId: str
     round: int

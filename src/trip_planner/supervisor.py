@@ -16,12 +16,13 @@ or the loop fails, so the workflow keeps running offline.
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 
-from langchain.agents import create_agent
+from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ModelRetryMiddleware,
@@ -29,9 +30,19 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
-from langchain.tools import ToolRuntime, tool
+from langchain.tools import InjectedToolCallId, ToolRuntime, tool
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
-from .contracts import AgentProposal, ProgressEvent, RevisionRequest, TripBrief
+from .contracts import (
+    AgentProposal,
+    ChoiceOption,
+    ProgressEvent,
+    RevisionRequest,
+    SpecialistTrace,
+    TripBrief,
+    merge_choices,
+)
 from .models import create_routed_chat_model
 from .ports import AgentContext, ToolGateway
 from .specialists import ALL_SPECIALISTS
@@ -123,28 +134,56 @@ class DelegationContext:
     once for the process instead of being closures over a run (item 2.1 of
     `docs/framework-alignment.md`). The supervisor still cannot alter the trip:
     this object is constructed by the caller, never by the model.
+
+    Note what is *not* here: a collector for the results. A tool reports through
+    its return value (`Command`), which lands in the agent's state.
     """
 
     brief: TripBrief
     round: int
     tools: ToolGateway
     mem: Any
-    extras: dict[str, Any]
     # name -> specialist, for the run being served.
     specialists: dict[str, Any] = field(default_factory=dict)
-    # What the tools collected, read by the caller once the loop finishes.
-    proposals: dict[str, AgentProposal] = field(default_factory=dict)
     # target agent -> the validated request it must act on.
     requests: dict[str, RevisionRequest] = field(default_factory=dict)
 
 
-def _agent_context(run: DelegationContext) -> AgentContext:
+class SupervisorState(AgentState):
+    """The nested agent's state, so a worker's result is state, not a side channel.
+
+    Reducers rather than overwrite: `ToolNode` runs a batch of tool calls on a
+    thread pool, so two specialists land in the same step and every append has to
+    count. The registration order is restored by the caller, because arrival order
+    is not stable.
+    """
+
+    proposals: Annotated[list[AgentProposal], operator.add]
+    traces: Annotated[list[SpecialistTrace], operator.add]
+    stay_choices: Annotated[dict[str, list[ChoiceOption]], merge_choices]
+
+
+@dataclass
+class SupervisorOutcome:
+    """What a supervisor loop contributed: the plan's inputs, read from its state."""
+
+    proposals: list[AgentProposal]
+    traces: list[SpecialistTrace]
+    stay_choices: dict[str, list[ChoiceOption]]
+
+
+def _agent_context(run: DelegationContext, extras: dict[str, Any]) -> AgentContext:
+    """A context for one specialist invocation.
+
+    `extras` is fresh per invocation, so what comes back is exactly what this
+    specialist produced -- no run-long accumulator to diff.
+    """
     return AgentContext(
         tripId=run.brief.tripId,
         round=run.round,
         tools=run.tools,
         mem=run.mem,
-        extras=run.extras,
+        extras=extras,
     )
 
 
@@ -153,6 +192,28 @@ def _specialist_for(run: DelegationContext, agent: str) -> Any:
     if specialist is None:
         raise ValueError(f"{agent} is not part of this run.")
     return specialist
+
+
+def _report(proposal: AgentProposal, produced: dict[str, Any], tool_call_id: str) -> Command:
+    """What one specialist's run contributes to the agent's state.
+
+    A tool that returns a `Command` touching `messages` has to carry its own
+    `ToolMessage` for the call it is answering, or the agent's history is left
+    inconsistent.
+    """
+    return Command(
+        update={
+            "proposals": [proposal],
+            "traces": list(produced.get("traces", [])),
+            "stay_choices": dict(produced.get("stay_choices", {})),
+            "messages": [
+                ToolMessage(
+                    content=f"{proposal.agent}: {proposal.summary}",
+                    tool_call_id=tool_call_id,
+                )
+            ],
+        }
+    )
 
 
 def _ask_tool(specialist: Any) -> Any:
@@ -169,7 +230,8 @@ def _ask_tool(specialist: Any) -> Any:
     tool to narrate itself. It has to be the runtime's writer and not one captured
     from the graph: `ToolNode` runs a batch of tool calls on a thread pool, and a
     captured writer resolves its config from a context variable that does not
-    cross threads.
+    cross threads. The result goes back as a `Command`, so it lands in the agent's
+    state rather than in a dict the caller mutated.
     """
 
     @tool(
@@ -179,20 +241,23 @@ def _ask_tool(specialist: Any) -> Any:
             "Use this when its domain is needed for the requested plan."
         ),
     )
-    def delegate(runtime: ToolRuntime[DelegationContext]) -> str:
+    def delegate(
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        runtime: ToolRuntime[DelegationContext],
+    ) -> Command:
         run = runtime.context
         resolved = _specialist_for(run, specialist.name)
+        produced: dict[str, Any] = {}
         runtime.stream_writer(ProgressEvent("agent_started", specialist.name, run.round))
         try:
-            proposal = resolved.invoke(run.brief, _agent_context(run), None)
+            proposal = resolved.invoke(run.brief, _agent_context(run, produced), None)
         except Exception as error:
             runtime.stream_writer(
                 ProgressEvent("agent_failed", specialist.name, run.round, str(error))
             )
             raise
         runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, run.round))
-        run.proposals[specialist.name] = proposal
-        return f"{specialist.label}: {proposal.summary}"
+        return _report(proposal, produced, tool_call_id)
 
     return delegate
 
@@ -212,15 +277,19 @@ def _revise_tool(specialist: Any) -> Any:
             "request is immutable and already targets it."
         ),
     )
-    def delegate(runtime: ToolRuntime[DelegationContext]) -> str:
+    def delegate(
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        runtime: ToolRuntime[DelegationContext],
+    ) -> Command | str:
         run = runtime.context
         request = run.requests.get(specialist.name)
         if request is None:
             return f"Nothing pending for the {specialist.label} specialist."
         resolved = _specialist_for(run, specialist.name)
+        produced: dict[str, Any] = {}
         runtime.stream_writer(ProgressEvent("agent_started", specialist.name, run.round))
         try:
-            proposal = resolved.invoke(run.brief, _agent_context(run), request)
+            proposal = resolved.invoke(run.brief, _agent_context(run, produced), request)
         except Exception as error:
             runtime.stream_writer(
                 ProgressEvent("agent_failed", specialist.name, run.round, str(error))
@@ -229,8 +298,7 @@ def _revise_tool(specialist: Any) -> Any:
         runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, run.round))
         if proposal.agent != request.targetAgent:
             raise ValueError(f"Revision tool returned {proposal.agent} for {request.targetAgent}.")
-        run.proposals[specialist.name] = proposal
-        return f"{specialist.label}: {proposal.summary}"
+        return _report(proposal, produced, tool_call_id)
 
     return delegate
 
@@ -258,6 +326,7 @@ def _dispatch_agent() -> Any:
         system_prompt=DISPATCH_PROMPT,
         middleware=supervisor_middleware(len(ASK_TOOLS)),
         context_schema=DelegationContext,
+        state_schema=SupervisorState,
     )
 
 
@@ -273,6 +342,7 @@ def _revision_agent() -> Any:
         system_prompt=REVISION_PROMPT,
         middleware=supervisor_middleware(len(REVISE_TOOLS)),
         context_schema=DelegationContext,
+        state_schema=SupervisorState,
     )
 
 
@@ -287,24 +357,36 @@ def _delegation_run(
         round=ctx.round,
         tools=ctx.tools,
         mem=ctx.mem,
-        extras=ctx.extras,
         specialists={s.name: s for s in specialists},
         requests={r.targetAgent: r for r in requests or []},
     )
 
 
-def _forward_custom_events(
+def _run_agent(
     agent: Any, payload: dict[str, Any], run: DelegationContext, forward: Callable[[Any], None]
-) -> None:
-    """Run the nested agent, passing its custom events to our stream.
+) -> dict[str, Any]:
+    """Run the nested agent, forwarding its custom events and returning its state.
 
-    The delegation tools write to the nested run's stream; a nested run is not
-    part of the outer graph's stream, so the hop has to be explicit. It happens
-    here, on the node's thread, which is what keeps the write off the tool's
-    thread pool.
+    The delegation tools write progress to the nested run's stream and their
+    results to the nested run's state; neither is part of the outer graph on its
+    own, so both hops are explicit here -- on the node's thread, which is what
+    keeps the writes off the tool's thread pool.
     """
-    for event in agent.stream(payload, context=run, stream_mode="custom"):
-        forward(event)
+    final: dict[str, Any] = {}
+    for mode, chunk in agent.stream(payload, context=run, stream_mode=["custom", "values"]):
+        if mode == "custom":
+            forward(chunk)
+        else:
+            final = chunk
+    return final
+
+
+def _outcome(final: dict[str, Any]) -> SupervisorOutcome:
+    return SupervisorOutcome(
+        proposals=list(final.get("proposals", [])),
+        traces=list(final.get("traces", [])),
+        stay_choices=dict(final.get("stay_choices", {})),
+    )
 
 
 def dispatch_with_supervisor(
@@ -312,15 +394,15 @@ def dispatch_with_supervisor(
     brief: TripBrief,
     ctx: AgentContext,
     forward_progress: Callable[[ProgressEvent], None],
-) -> list[AgentProposal]:
-    """Run the supervisor tool loop and return the proposals it collected.
+) -> SupervisorOutcome:
+    """Run the supervisor tool loop and return what it produced.
 
     Raises when no model is configured or the supervisor delegates to nobody, so
     the caller can fall back to deterministic dispatch.
     """
     agent = _dispatch_agent()
     run = _delegation_run(specialists, brief, ctx)
-    _forward_custom_events(
+    final = _run_agent(
         agent,
         {
             "messages": [
@@ -336,10 +418,15 @@ def dispatch_with_supervisor(
         run,
         forward_progress,
     )
-    if not run.proposals:
+    outcome = _outcome(final)
+    if not outcome.proposals:
         raise RuntimeError("Supervisor completed without delegating to a specialist.")
-    # Preserve the registration order so the plan's sections stay stable.
-    return [run.proposals[s.name] for s in specialists if s.name in run.proposals]
+    # Arrival order is not stable: parallel appends land as they finish, and a
+    # model may call the same tool twice. Restore the registration order and keep
+    # the last proposal per specialist, so the plan's sections stay stable.
+    by_agent = {p.agent: p for p in outcome.proposals}
+    outcome.proposals = [by_agent[s.name] for s in specialists if s.name in by_agent]
+    return outcome
 
 
 def revise_with_supervisor(
@@ -349,13 +436,13 @@ def revise_with_supervisor(
     brief: TripBrief,
     ctx: AgentContext,
     forward_progress: Callable[[ProgressEvent], None],
-) -> list[AgentProposal]:
+) -> SupervisorOutcome:
     """Route validated revision requests through a named supervisor tool loop."""
     if not requests:
-        return proposals
+        return SupervisorOutcome(proposals=proposals, traces=[], stay_choices={})
     agent = _revision_agent()
     run = _delegation_run(specialists, brief, ctx, requests)
-    _forward_custom_events(
+    final = _run_agent(
         agent,
         {
             "messages": [
@@ -375,10 +462,13 @@ def revise_with_supervisor(
         run,
         forward_progress,
     )
-    if set(run.proposals) != set(run.requests):
-        missing = sorted(set(run.requests) - set(run.proposals))
+    outcome = _outcome(final)
+    by_agent = {p.agent: p for p in outcome.proposals}
+    if set(by_agent) != set(run.requests):
+        missing = sorted(set(run.requests) - set(by_agent))
         raise RuntimeError(
-            f"Revision supervisor delegated {len(run.proposals)} of "
-            f"{len(run.requests)} pending request(s); missed {', '.join(missing)}."
+            f"Revision supervisor delegated {len(by_agent)} of {len(run.requests)} "
+            f"pending request(s); missed {', '.join(missing)}."
         )
-    return [run.proposals.get(p.agent, p) for p in proposals]
+    outcome.proposals = [by_agent.get(p.agent, p) for p in proposals]
+    return outcome

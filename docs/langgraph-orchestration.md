@@ -16,9 +16,15 @@ flowchart LR
 
 ## State
 
-The graph carries `brief`, `round`, `proposals`, `conflicts` and the final `plan`. Input and output
-use the Pydantic contracts in `contracts.py`, so the UI and the specialists agree on one shape that
-is validated rather than trusted.
+The graph carries `brief`, `round`, `max_rounds`, `proposals`, `conflicts` and the final `plan`, plus
+two channels the workers report through: `traces` (how each specialist decided) and `stay_choices`
+(the candidates it weighed up). Input and output use the Pydantic contracts in `contracts.py`, so the
+UI and the specialists agree on one shape that is validated rather than trusted.
+
+`traces` and `stay_choices` use reducers (`operator.add` and `contracts.merge_choices`) because a
+round can append from several specialists, and under the supervisor from several threads at once.
+Nothing about a run is captured when the graph is built: each run arrives as a `TripRun` through
+`Runtime.context`, so one compiled graph serves every trip.
 
 ## Execution rules
 

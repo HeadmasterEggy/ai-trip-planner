@@ -10,11 +10,18 @@ import pytest
 
 from trip_planner import workflow as workflow_module
 from trip_planner.budget import assess_budget, cost_of, sum_usd
-from trip_planner.contracts import AgentProposal, ProposalItem, TripBrief, brief_problem
+from trip_planner.contracts import (
+    AgentProposal,
+    ProposalItem,
+    SpecialistTrace,
+    TripBrief,
+    brief_problem,
+)
 from trip_planner.memory import InMemoryStore
 from trip_planner.ports import AgentContext, Place, RouteLeg, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.specialists.accommodation import split_stay
+from trip_planner.specialists.base import FunctionSpecialist
 from trip_planner.specialists.itinerary import ACTIVITY_BUDGET_SHARE, DEFAULT_ACTIVITY_COST_USD
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
@@ -254,3 +261,55 @@ def test_mock_tools_are_deterministic():
         frm="Sydney", to="Tokyo", depart="2026-06-15", ret="2026-06-22", passengers=2
     )
     assert flights[0].priceUsd == 1240.0  # 310 * 2 passengers * 2 legs
+
+
+def test_worker_results_live_in_graph_state(brief, monkeypatch):
+    """Traces and candidates are state, not a dict the nodes passed around.
+
+    This is what item 2.2 buys: a checkpoint (or Studio, or `get_state`) can show
+    which specialist fell back and which candidates were weighed up, because the
+    data is in a channel rather than in a closure.
+    """
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+    final: dict = {}
+    # A single stream mode yields payloads directly, not (mode, payload) pairs.
+    for payload in workflow_module._GRAPH.stream(
+        {"brief": brief},
+        context=workflow_module._run_context(
+            OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1)
+        ),
+        stream_mode="values",
+    ):
+        final = payload
+
+    assert len(final["traces"]) == len(ALL_SPECIALISTS)
+    assert {t.agent for t in final["traces"]} == {s.name for s in ALL_SPECIALISTS}
+    assert final["stay_choices"]  # the accommodation candidates the traveller can pick
+    assert "plan" in final
+
+
+def test_a_specialist_sees_only_its_own_extras(brief):
+    """`extras` is per invocation, so nothing has to be diffed out of it.
+
+    A run-long accumulator was the side channel: it made "what did this
+    specialist report" a subtraction rather than a value.
+    """
+    seen: dict[str, dict] = {}
+
+    def watch(name: str):
+        def run(brief_, context, revision=None) -> AgentProposal:
+            seen[name] = dict(context.extras)  # empty on entry, every time
+            context.extras.setdefault("traces", []).append(
+                SpecialistTrace(agent=name, round=1, source="calculator")
+            )
+            return AgentProposal(agent=name, summary="s", items=[], assumptions=["stub"])
+
+        return run
+
+    specialists = [FunctionSpecialist(s.name, s.label, watch(s.name)) for s in ALL_SPECIALISTS]
+    plan = run_orchestrator(brief, OrchestratorOptions(specialists=specialists, max_rounds=1))
+
+    assert all(entry == {} for entry in seen.values())
+    assert {t.agent for t in plan.traces} == {s.name for s in ALL_SPECIALISTS}

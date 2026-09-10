@@ -106,11 +106,9 @@ def test_the_supervisor_path_reports_from_the_consumer_thread(monkeypatch, ctx):
         forwarded.append(event)
         assert threading.current_thread().name == consumer_thread
 
-    proposals = supervisor_module.dispatch_with_supervisor(
-        ALL_SPECIALISTS, DEMO_BRIEF, ctx, forward
-    )
+    outcome = supervisor_module.dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, forward)
 
-    assert [p.agent for p in proposals] == ["itinerary", "transport"]
+    assert [p.agent for p in outcome.proposals] == ["itinerary", "transport"]
     # The two tools run in parallel, so only each specialist's own pair is ordered.
     by_agent: dict[str, list[str]] = {}
     for event in forwarded:
@@ -234,5 +232,28 @@ def test_each_run_uses_its_own_specialists(monkeypatch, ctx):
     )
 
     assert used == ["first", "second"]
-    assert [p.summary for p in first] == ["first"]
-    assert [p.summary for p in second] == ["second"]
+    assert [p.summary for p in first.proposals] == ["first"]
+    assert [p.summary for p in second.proposals] == ["second"]
+
+
+def test_a_repeated_tool_call_is_deduped_but_every_run_is_reported(monkeypatch, ctx):
+    """Arrival order is not stable, so the caller restores order and dedupes.
+
+    The nested agent's state appends under a reducer -- parallel calls land as
+    they finish, and a model may ask for the same specialist twice -- while the
+    outcome keeps one proposal per specialist so the plan has one section each.
+    """
+    model = ScriptedChatModel(
+        responses=[
+            tool_calls("ask_itinerary_specialist", "ask_itinerary_specialist"),
+            AIMessage(content="done"),
+        ]
+    )
+    monkeypatch.setattr(supervisor_module, "create_routed_chat_model", lambda task: model)
+
+    outcome = supervisor_module.dispatch_with_supervisor(
+        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda event: None
+    )
+
+    assert [p.agent for p in outcome.proposals] == ["itinerary"]  # one section, not two
+    assert len(outcome.traces) == 2  # ...but both runs were reported
