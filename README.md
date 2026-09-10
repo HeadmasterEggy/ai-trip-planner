@@ -28,9 +28,10 @@ flowchart TB
 ```
 
 A supervisor agent chooses *which* specialists to call, through one tool each. It cannot
-touch the validated brief, the memory store or the tool gateway — those are captured when the
-tools are built — so its only freedom is delegation, never the trip facts. When no model is
-configured, or the loop fails, dispatch falls back to running every specialist deterministically.
+touch the validated brief, the memory store or the tool gateway — those arrive in the run context
+the graph constructs, never from the model — so its only freedom is delegation, never the trip
+facts. When no model is configured, or the loop fails, dispatch falls back to running every
+specialist deterministically.
 
 LangGraph owns state, conflict checks, the round limit and escalation. The specialists own
 role-specific reasoning and tool selection. That split is deliberate: budget red lines and the

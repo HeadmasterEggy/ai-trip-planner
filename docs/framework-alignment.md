@@ -50,8 +50,8 @@ The framework surface is five imports:
 | Import | Where | Role |
 | --- | --- | --- |
 | `ChatOpenAI` | `models.py:26` | provider + structured output |
-| `create_agent` | `supervisor.py:22` | the one real agent loop |
-| `tool`, `ToolRuntime` | `supervisor.py:30` | delegation, and the writer a tool narrates through |
+| `create_agent` | `supervisor.py:24` | the one real agent loop |
+| `tool`, `ToolRuntime` | `supervisor.py:32` | delegation, and the writer a tool narrates through |
 | `get_stream_writer` | `workflow.py:23` | progress from a node |
 | `StateGraph`, `START`, `END` | `workflow.py:24` | deterministic orchestration |
 
@@ -65,15 +65,15 @@ structured-output call and two are deterministic calculators, behind a framework
 
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
-| Supervisor | `create_agent` + one tool per worker | `supervisor.py:250` | Conformant |
-| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:462-473` | Conformant, and what the guide recommends |
+| Supervisor | `create_agent` + one tool per worker | `supervisor.py:255` (built once, `ASK_TOOLS`) | Conformant |
+| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:491-502` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
 | Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:117`) | Conformant (required for DeepSeek) |
 | Tracing | LangSmith | `@traceable` on `detect_conflicts` | Conformant |
 | **Delegation input** | the supervisor decides **what** each worker is told | no input at all, and deliberately so: the worker derives its prompt from the brief | **Deliberate** |
 | **Worker results** | final message, or `Command`/`InjectedToolCallId` back into graph state | closure side channel, `shared_extras` | **Deviation** |
-| **Dependency injection** | `context_schema` + `ToolRuntime`, agent built once | closures, agent rebuilt per round | **Deviation** |
+| Dependency injection | `context_schema` + `ToolRuntime`, agent built once | `DelegationContext` via `runtime.context`, cached agent | Conformant |
 | **Human in the loop** | `checkpointer` + `interrupt()` + `Command(resume=...)` | plan records + full re-run | **Gap** |
 | Resilience | `ModelRetry` / `ToolRetry` / `ToolError` / `ModelFallback` / call limits | `ModelRetry`, `ToolRetry`, `ToolError` and both call limits in `supervisor_middleware`; no provider fallback yet | **Conformant**, fallback deferred |
 
@@ -81,14 +81,18 @@ structured-output call and two are deterministic calculators, behind a framework
 
 These are load-bearing, and the strategy below must not sand them off:
 
-1. **The supervisor cannot alter trip facts.** `brief`, `ctx`, `mem` and `tools` are captured when the
-   tools are built (`supervisor.py:115-155`), so the deterministic rules downstream validate the
-   traveller's request rather than a model's paraphrase of it.
-2. **Revision requests are immutable.** One tool per validated `RevisionRequest`
-   (`supervisor.py:166-215`): the supervisor routes a constraint, it cannot rewrite one.
+1. **The supervisor cannot alter trip facts.** The brief, the ports and the memory store arrive in a
+   `DelegationContext` (`supervisor.py:119-133`) that the graph constructs, never the model, and the
+   tools take no arguments at all (`ASK_TOOLS`, `supervisor.py:240`). The deterministic rules
+   downstream therefore validate the traveller's request, not a model's paraphrase of it. The
+   mechanism moved in item 2.1 -- injected through the runtime instead of captured in a closure --
+   and the guarantee did not change.
+2. **Revision requests are immutable.** A revision tool looks its request up in the run context
+   (`_revise_tool`, `supervisor.py:200`): the model routes a validated constraint to its owner and
+   can neither supply nor rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
-   (`models.py:127`, `workflow.py:327-347`, `workflow.py:393-397`).
+   (`models.py:127`, `workflow.py:345-370`, `workflow.py:417-421`).
 4. **A decision is a preference, not an override.** `apply_decision` writes to long-term memory
    (`decisions.py:49`), which is why a choice survives the next message — something a one-shot
    `interrupt` would not give.
@@ -101,10 +105,10 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
-**Progress.** Wave 1 has shipped. 1.1: the routing map names the six roles that call a model.
-1.2: the delegation tools take no argument. 1.3: the supervisor's loop has retries, error handling
-and declared bounds. 1.4: progress is a stream, no module imports Streamlit, and `ui/live.py` is
-gone. Waves 2-4 are open.
+**Progress.** Waves 1 and 2.1/2.3 have shipped. Wave 1: role-based routing, no delegation
+argument, retries and declared bounds, and progress as a stream (`ui/live.py` deleted). Wave 2 so
+far: the supervisor agent and the graph are each built once, with per-run state injected through
+`ToolRuntime` / `Runtime`. Open: 2.2 (worker results into graph state) and Waves 3-4.
 
 ### Wave 1 — Non-structural
 
@@ -178,9 +182,9 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 - Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
 - Transient provider failures: **no retry**. A timeout or 429 dropped straight to the deterministic
   fallback, a silent downgrade of the whole section.
-- Loop bounds: the round limit is ours (`workflow.py:454`), and the only bound on the supervisor's
+- Loop bounds: the round limit is ours (`workflow.py:483`), and the only bound on the supervisor's
   own tool loop was LangGraph's default recursion limit, whose failure surfaced as an exception
-  caught by a broad `except` (`workflow.py:347`).
+  caught by a broad `except` (`workflow.py:370`).
 - Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
 
@@ -279,68 +283,50 @@ deleted. *Shipped.*
 
 Medium risk: touches how dependencies and results move, but not what the graph decides.
 
-#### 2.1 Build the supervisor once, inject through `ToolRuntime` (M)
+#### 2.1 Build the supervisor once, inject through `ToolRuntime` (M) — shipped
 
-**Problem.** `create_agent` is called on every dispatch and every revision round
-(`supervisor.py:250,297`), and the outer graph is compiled on every request
-(`workflow.py:491`). Both exist only because the tools are closures over per-run state. Compiling a
-graph is not free, and the pattern inverts the documented one, where the agent is built once and
-reads what it needs from the runtime.
+**Problem.** `create_agent` ran on every dispatch and every revision round, and the graph was
+compiled on every request. Both existed only because the tools were closures over one run: the
+specialist instances, the brief, the ports and the memory store were all captured at build time.
 
 **Official mechanism.** `create_agent(..., context_schema=...)` plus `runtime: ToolRuntime[Ctx]`
-inside the tool, where `runtime.context` is the injected object (verified fields: `state`, `context`,
-`config`, `store`, `tool_call_id`, `stream_writer`, ...). The outer `invoke` accepts `context=`.
+inside the tool, where `runtime.context` is the injected object. Both `invoke` and `stream` accept
+`context=`.
 
-**Target.**
+**Shipped.** The tools are now module-level and take no run-specific state:
 
-```python
-@dataclass
-class TripContext:  # passed per run, never written by the model
-    brief: TripBrief
-    round: int
-    tools: ToolGateway
-    mem: Any
+- `DelegationContext` (`supervisor.py:119-133`) carries the brief, the round, the ports, the memory
+  store, the run's specialist instances by name, and the two collections the tools fill: `proposals`
+  and `requests`.
+- `ASK_TOOLS` and `REVISE_TOOLS` (`supervisor.py:240-241`) are one tool per specialist, built once.
+  A tool resolves *which* specialist to call from `runtime.context`, which is what lets the same tool
+  object serve every run — and what `test_each_run_uses_its_own_specialists` pins.
+- The revision path fits the mechanism better than it looked: instead of building one tool per
+  *pending request*, all five revision tools exist and each looks its request up in the context,
+  returning "nothing pending" for a specialist that has none. The completion check is on the pending
+  set, so "delegated 0 of 1" still means what it did.
+- `_dispatch_agent()` and `_revision_agent()` are `lru_cache`d (`supervisor.py:244-273`): cached
+  rather than module-level because building them needs credentials, and the app must still import and
+  run with none. `tests/conftest.py` clears them per test, since the fixtures replace the model route.
 
+**Why the guarantee survives.** The brief still comes from the graph, not from the model's messages:
+`DelegationContext` is constructed by the caller. The boundary is the same one the closure drew, now
+expressed the documented way — and a test asserts the tools still expose an empty schema, so the
+model still cannot restate the request.
 
-@tool(_tool_name("ask", specialist.name), args_schema=_Delegation, description=...)
-def delegate(runtime: ToolRuntime[TripContext]) -> str:
-    ctx = runtime.context
-    proposal = specialist.invoke(ctx.brief, _agent_context(ctx), None)
-    ...
-```
+**Tests.** `test_the_supervisor_agent_is_built_once` (a spy on `create_agent`: one construction, two
+runs, and the second run really ran) and `test_each_run_uses_its_own_specialists` (two runs, two
+different instances of the same specialist name, each invoked by its own run). `tests/conftest.py`
+gives every test a fresh cached agent, which is the contract the caching added.
 
-```python
-supervisor = create_agent(
-    model=model, tools=DELEGATION_TOOLS, system_prompt=DISPATCH_PROMPT, context_schema=TripContext
-)
-...
-supervisor.invoke({"messages": [...]}, context=TripContext(brief, 1, tools, mem))
-```
-
-The per-specialist tool list still varies by run, so keep a small factory that builds the tool list
-per run but reuse a compiled agent when the tool set is identical — or accept building only the
-tools per run and compile once per tool-set shape.
-
-**Why the guarantee survives.** The brief still comes from the graph, not from the model's messages;
-`TripContext` is constructed in `dispatch`, which the model cannot reach. This is the same boundary
-as the closure, expressed the documented way.
-
-**Risks.** `context_schema` is per-`create_agent`, so a run-varying tool list limits how much can be
-cached; measure before optimising. The revision path needs a different immutable request per target,
-which fits `context_schema` poorly — keep those tools closure-built per round and say why in a
-comment.
-
-**Tests.** The delegation tools report identical behaviour for identical briefs before and after;
-`create_agent` is constructed at most once per run (count with a spy).
-
-**Done when.** Per-run state reaches the tools through the runtime, and the supervisor graph is not
-rebuilt on every revision round.
+**Done when.** Per-run state reaches the tools through the runtime, and the agent is not rebuilt per
+round. *Shipped.*
 
 #### 2.2 Put worker results in graph state instead of a side channel (M/L)
 
-**Problem.** `shared_extras` (`workflow.py:307`) is a mutable dict captured by the closures. Traces
+**Problem.** `shared_extras` (`workflow.py:285`) is a mutable dict captured by the closures. Traces
 and stay choices are written into it by specialists (`specialists/base.py:86`,
-`specialists/accommodation.py:225`) and read out in `build_plan` (`workflow.py:447-450`). The
+`specialists/accommodation.py:225`) and read out in `build_plan` (`workflow.py:474-479`). The
 official docs call out the consequence of results living outside the graph
 ([Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents)):
 
@@ -383,9 +369,9 @@ Two details that will otherwise cost an afternoon:
   `tool_call_id`, or the agent's message history is left inconsistent.
 
 **Reducer requirement.** The outer `State` is a plain `TypedDict` with overwrite semantics
-(`workflow.py:88-95`). Parallel tool calls appending to the same key need a reducer
+(`workflow.py:78-85`). Parallel tool calls appending to the same key need a reducer
 (`Annotated[list[...], operator.add]`), and the existing "restore registration order" step
-(`supervisor.py:274`) must stay — with concurrent appends the arrival order is not stable, and
+(`supervisor.py:335`) must stay — with concurrent appends the arrival order is not stable, and
 section order in the plan must not become nondeterministic.
 
 **Risks.** Thread-safety of the reducer under parallel tools (LangGraph handles this, but the tests
@@ -399,20 +385,38 @@ version; the section order matches `ALL_SPECIALISTS` under a run that delegates 
 **Done when.** A checkpointed run exposes proposals and traces in graph state, and removing
 `shared_extras` changes no test outcome.
 
-#### 2.3 Compile the outer graph once (S)
+#### 2.3 Compile the outer graph once (S) — shipped
 
-**Problem.** `run_orchestrator` compiles per request (`workflow.py:491`). That is a consequence of
-per-run options (injected specialists, decisions, callbacks).
+**Problem.** `run_orchestrator` compiled per request. Nothing about a run was safe to share, because
+every node closed over its own options.
 
-**Target.** Split per-run inputs from construction: compile with a static config (checkpointer,
-`context_schema`) at module or session level, and pass brief/decisions/context per `invoke`
-(`invoke(..., context=...)`). Keep a compile-per-run escape hatch for tests that inject specialists,
-since `OrchestratorOptions.specialists` is the deterministic seam.
+**Official mechanism.** LangGraph injects per-run data into a node through `Runtime.context`: a node
+declares `runtime: Runtime[TripRun]` and reads `runtime.context`, and both `invoke` and `stream`
+accept `context=`.
 
-**Tests.** An existing test that injects specialists still passes; a test that the module-level graph
-is reused across two runs (identity, not timing).
+**Shipped.** `TripRun` (`workflow.py:271-285`) holds everything a run needs — specialists, the name
+index, ports, memory, the round limit, the decisions, and the per-run `extras` scratch. Every node
+that needs it takes `runtime: Runtime[TripRun]`, and `_GRAPH` is compiled once at import
+(`workflow.py:507`). `create_orchestrator_graph()` no longer takes options at all.
 
-**Done when.** The default path compiles once per process.
+Two consequences worth recording:
+
+- The round limit moved into the graph state (`state["max_rounds"]`) because a conditional-edge
+  function only receives the state, and routing needs the limit. It is per-run data, so state is a
+  fair home for it.
+- `extras` had to become per-run for real. If it had stayed where it was, traces would accumulate
+  across runs and the UI would show every specialist twice;
+  `test_two_runs_do_not_share_their_context` runs the same trip twice and asserts five traces each,
+  not ten.
+
+**Risks.** A shared graph means a bug in per-run plumbing leaks between trips rather than between
+requests — which is why the isolation test exists. Concurrent runs are safe because each passes its
+own `TripRun` through `context=`, and the tools only write to the context they were handed.
+
+**Tests.** `test_the_graph_is_compiled_once_and_shared` (patching the factory proves the entry points
+do not call it) and the isolation test above.
+
+**Done when.** The default path compiles once per process. *Shipped.*
 
 ### Wave 3 — Persistence and human in the loop
 
@@ -421,7 +425,7 @@ that lives in closures cannot be checkpointed.
 
 #### 3.1 Checkpoint the outermost graph (M)
 
-**Problem.** `graph.compile()` has no checkpointer (`workflow.py:473`), so there is no persistence,
+**Problem.** `graph.compile()` has no checkpointer (`workflow.py:502`), so there is no persistence,
 no resume after a crash, no `get_state`, and no way to pause.
 
 **Official mechanism.** Compile the **outermost** graph with a checkpointer and invoke with a
@@ -449,7 +453,7 @@ does add a second place to bound.
 
 **Problem.** A traveller's decision is applied by re-running the whole graph
 (`decisions.py:49-56`): five specialists, up to three rounds, to change one stay. And an unresolved
-escalation is only *reported* (`workflow.py:259-268`) — nothing pauses.
+escalation is only *reported* (`workflow.py:250-259`) — nothing pauses.
 
 **Official mechanism.** `interrupt()` inside a node, resumed with `Command(resume=...)`. It
 propagates up from nested `create_agent` layers to the outermost graph.
@@ -462,7 +466,7 @@ propagates up from nested `create_agent` layers to the outermost graph.
   human's change costs one specialist, not five.
 - **3b.** Interrupt on `confirm_choice` (stay choices) as well. This **changes the product
   contract**: `_choice_checkpoints` is explicitly non-blocking today ("a traveller who ignores them
-  still gets a complete plan", `workflow.py:199-206`). Making it a pause is a defensible product
+  still gets a complete plan", `workflow.py:190-197`). Making it a pause is a defensible product
   decision, but it is a decision, not a refactor — and it should be argued in `docs/streamlit-ui.md`,
   not smuggled in with a state-model change.
 
@@ -512,7 +516,7 @@ can carry.
 
 #### 4.3 Parallelise the deterministic dispatch (S)
 
-`deterministic_dispatch` is a sequential comprehension (`workflow.py:324`), so with no model the
+`deterministic_dispatch` is a sequential comprehension (`workflow.py:342`), so with no model the
 five independent specialists run one after another. They are pure over `(brief, ctx)`, and after
 `db59f0e` the progress sink is thread-safe, so a bounded `ThreadPoolExecutor` is now safe. Watch the
 shared `ctx.extras` writes (`specialists/base.py:86`, `specialists/accommodation.py:225`): appends
@@ -522,7 +526,7 @@ not from the graph.
 
 ## What not to change
 
-- **The deterministic conflict and budget rules** (`workflow.py:104`). They are the reason the
+- **The deterministic conflict and budget rules** (`workflow.py:95`). They are the reason the
   negotiation converges; the docs' own performance tables show the model-driven patterns costing more
   calls for less control.
 - **The fallback chain.** No official middleware replaces "degrade to validated deterministic output

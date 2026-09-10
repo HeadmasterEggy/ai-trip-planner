@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from trip_planner import workflow as workflow_module
 from trip_planner.budget import assess_budget, cost_of, sum_usd
 from trip_planner.contracts import AgentProposal, ProposalItem, TripBrief, brief_problem
 from trip_planner.memory import InMemoryStore
@@ -204,6 +205,45 @@ def test_the_graph_runs_every_specialist_and_emits_progress(brief):
 def test_the_graph_stops_at_the_round_limit(brief):
     plan = run_orchestrator(brief, OrchestratorOptions(max_rounds=1))
     assert plan.round == 1
+
+
+def test_the_graph_is_compiled_once_and_shared(brief, monkeypatch):
+    """A run's dependencies are injected, so the graph is built at import.
+
+    Rebuilding it per request was the reason the graph factory took options at
+    all; now a test that patches the factory proves the entry points do not call
+    it.
+    """
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return workflow_module._GRAPH
+
+    monkeypatch.setattr(workflow_module, "create_orchestrator_graph", factory)
+    run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1))
+    run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1))
+
+    assert calls == []
+
+
+def test_two_runs_do_not_share_their_context(brief):
+    """Round limits and per-run scratch must not leak between invocations.
+
+    `extras` is the one to watch: if it lived on the graph rather than on the
+    run, traces would accumulate and the UI would show every specialist twice.
+    """
+    one_round = OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1)
+    first = run_orchestrator(brief, one_round)
+    second = run_orchestrator(brief, one_round)
+
+    assert first.round == 1
+    assert len(first.traces) == len(ALL_SPECIALISTS)  # one round, one trace each
+    assert len(second.traces) == len(ALL_SPECIALISTS)  # not ten: extras are per run
+
+    # And a later run is not capped by the earlier run's limit.
+    multi = run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS))
+    assert multi.round > 1
 
 
 def test_mock_tools_are_deterministic():
