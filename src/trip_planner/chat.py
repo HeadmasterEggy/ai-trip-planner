@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -23,6 +23,7 @@ from .contracts import (
     ChatRequest,
     ChatResponse,
     ChatTurn,
+    ProgressEvent,
     TripBrief,
     TripPlan,
     brief_problem,
@@ -30,7 +31,7 @@ from .contracts import (
 from .demo import DEMO_BRIEF
 from .memory import memory as default_memory
 from .models import create_routed_chat_model
-from .workflow import OrchestratorOptions, run_orchestrator
+from .workflow import OrchestratorOptions, PlanStream, run_orchestrator_stream
 
 PATCH_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
 
@@ -310,14 +311,68 @@ def _create_reply_generator() -> Callable[[str], str] | None:
     return generate
 
 
-def run_trip_chat(
+class ChatStream:
+    """One conversational turn as progress events, and the response it produced.
+
+    Iterate for progress, then read `response`, which is None until the iterator
+    is exhausted. The reply is written after the plan, on the consumer's thread,
+    so a consumer that stops early never records a turn it did not finish.
+    """
+
+    def __init__(
+        self,
+        plan_stream: PlanStream,
+        message: str,
+        before: TripBrief,
+        after: TripBrief,
+        mem: Any,
+        trip_id: str,
+        reply_generator: Callable[[str], str] | None,
+    ) -> None:
+        self._plan_stream = plan_stream
+        self._message = message
+        self._before = before
+        self._after = after
+        self._mem = mem
+        self._trip_id = trip_id
+        self._reply_generator = reply_generator
+        self.response: ChatResponse | None = None
+
+    def __iter__(self) -> Iterator[ProgressEvent]:
+        yield from self._plan_stream
+
+        plan = self._plan_stream.plan
+        if plan is None:
+            raise RuntimeError("The planning run finished without a plan to reply from.")
+
+        reply = fallback_reply_for(plan)
+        generate = self._reply_generator or _create_reply_generator()
+        if generate is not None:
+            try:
+                reply = generate(
+                    reply_prompt(
+                        self._message,
+                        self._before,
+                        self._after,
+                        changed_fields(self._before, self._after),
+                        plan,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - a reply failure must not lose the plan
+                print(f"[chat] Natural-language reply failed; using a local fallback: {error}")
+
+        self._mem.append_short_term(self._trip_id, ChatTurn(role="assistant", content=reply))
+        self.response = ChatResponse(reply=reply, plan=plan)
+
+
+def run_trip_chat_stream(
     request: ChatRequest,
     options: OrchestratorOptions | None = None,
     *,
     extractor: BriefExtractor | None = None,
     reply_generator: Callable[[str], str] | None = None,
-) -> ChatResponse:
-    """Apply a message to the brief, re-plan, and answer in the traveller's language."""
+) -> ChatStream:
+    """Apply a message to the brief, re-plan, and answer -- reporting progress."""
     options = options or OrchestratorOptions()
     base = request.brief or DEMO_BRIEF
     current = TripBrief(**{**base.model_dump(), "tripId": request.tripId})
@@ -329,17 +384,35 @@ def run_trip_chat(
     mem.append_short_term(request.tripId, ChatTurn(role="user", content=request.message))
 
     options.mem = mem
-    plan = run_orchestrator(brief, options)
+    return ChatStream(
+        plan_stream=run_orchestrator_stream(brief, options),
+        message=request.message,
+        before=current,
+        after=brief,
+        mem=mem,
+        trip_id=request.tripId,
+        reply_generator=reply_generator,
+    )
 
-    reply = fallback_reply_for(plan)
-    generate = reply_generator or _create_reply_generator()
-    if generate is not None:
-        try:
-            reply = generate(
-                reply_prompt(request.message, current, brief, changed_fields(current, brief), plan)
-            )
-        except Exception as error:  # noqa: BLE001 - a reply failure must not lose the plan
-            print(f"[chat] Natural-language reply failed; using a local fallback: {error}")
 
-    mem.append_short_term(request.tripId, ChatTurn(role="assistant", content=reply))
-    return ChatResponse(reply=reply, plan=plan)
+def run_trip_chat(
+    request: ChatRequest,
+    options: OrchestratorOptions | None = None,
+    *,
+    extractor: BriefExtractor | None = None,
+    reply_generator: Callable[[str], str] | None = None,
+) -> ChatResponse:
+    """Apply a message to the brief, re-plan, and answer in the traveller's language.
+
+    The convenience form: same work as `run_trip_chat_stream`, with progress
+    discarded. A UI that wants to watch the specialists iterates the stream.
+    """
+    stream = run_trip_chat_stream(
+        request, options, extractor=extractor, reply_generator=reply_generator
+    )
+    for _ in stream:
+        pass
+    response = stream.response
+    if response is None:
+        raise RuntimeError("The chat turn finished without a response.")
+    return response

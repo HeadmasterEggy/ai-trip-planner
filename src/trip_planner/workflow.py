@@ -16,10 +16,11 @@ budget overrun oscillated 29.25% -> 16.50% -> 25.25% without ever settling.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable
 
@@ -36,6 +37,7 @@ from .contracts import (
     ChoiceOption,
     HitlCheckpoint,
     NegotiationRound,
+    ProgressEvent,
     RevisionRequest,
     TripBrief,
     TripPlan,
@@ -52,17 +54,6 @@ DEFAULT_MAX_ROUNDS = 3
 
 
 @dataclass
-class ProgressEvent:
-    """Emitted as each specialist starts, finishes or fails, so a UI can show
-    per-agent state instead of one opaque spinner."""
-
-    type: Literal["agent_started", "agent_completed", "agent_failed"]
-    agent: str
-    round: int
-    error: str | None = None
-
-
-@dataclass
 class OrchestratorOptions:
     """Dependencies are injectable so the graph is testable without network or
     singleton state.
@@ -76,7 +67,6 @@ class OrchestratorOptions:
     tools: ToolGateway | None = None
     mem: Any | None = None
     max_rounds: int = DEFAULT_MAX_ROUNDS
-    on_progress: Callable[[ProgressEvent], None] | None = None
     # Decisions already made by the traveller, as preference key -> chosen id.
     # They are written into memory before planning so the specialists simply
     # read them as confirmed preferences, rather than the graph special-casing
@@ -291,10 +281,15 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
     specialists, by_name, tools, mem, max_rounds = _resolve(options)
     injected_specialists = options.specialists is not None
     decisions = options.decisions or {}
-    emit = options.on_progress or (lambda event: None)
 
-    def emit_raw(kind: str, agent: str, round_no: int, error: str | None) -> None:
-        emit(ProgressEvent(kind, agent, round_no, error))  # type: ignore[arg-type]
+    def write_progress(event: ProgressEvent) -> None:
+        """Put one event on the run's custom stream.
+
+        Called from the node's own thread. A no-op when the graph is invoked
+        rather than streamed, which is why `run_orchestrator` carries no progress
+        plumbing at all.
+        """
+        get_stream_writer()(event)
 
     # One context per run, so a specialist can report the candidates it weighed
     # up through `extras` without the graph threading a return channel.
@@ -306,13 +301,13 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
         )
 
     def run_one(specialist, brief, round_no, revision=None) -> AgentProposal:
-        emit(ProgressEvent("agent_started", specialist.name, round_no))
+        write_progress(ProgressEvent("agent_started", specialist.name, round_no))
         try:
             proposal = specialist.invoke(brief, context(brief, round_no), revision)
-            emit(ProgressEvent("agent_completed", specialist.name, round_no))
+            write_progress(ProgressEvent("agent_completed", specialist.name, round_no))
             return proposal
         except Exception as error:
-            emit(ProgressEvent("agent_failed", specialist.name, round_no, str(error)))
+            write_progress(ProgressEvent("agent_failed", specialist.name, round_no, str(error)))
             raise
 
     def deterministic_dispatch(brief: TripBrief) -> list[AgentProposal]:
@@ -323,7 +318,12 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
         if injected_specialists:
             return {"round": 1, "proposals": deterministic_dispatch(brief)}
         try:
-            proposals = dispatch_with_supervisor(specialists, brief, context(brief, 1), emit_raw)
+            # The delegation tools emit on the nested agent's custom stream, which
+            # `dispatch_with_supervisor` forwards here; the tools themselves run on
+            # a thread pool, so this is the hop that keeps the writes on our thread.
+            proposals = dispatch_with_supervisor(
+                specialists, brief, context(brief, 1), write_progress
+            )
             # The supervisor may legitimately skip a specialist. Fill the gaps so
             # the plan always has all five sections rather than silently losing one.
             missing = [s for s in specialists if s.name not in {p.agent for p in proposals}]
@@ -376,7 +376,7 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                     requests,
                     brief,
                     context(brief, round_no),
-                    emit_raw,
+                    write_progress,
                 )
             except Exception as error:  # noqa: BLE001
                 print(
@@ -462,14 +462,67 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
     return graph.compile()
 
 
-def run_orchestrator(brief: TripBrief, options: OrchestratorOptions | None = None) -> TripPlan:
+def _checked_brief(brief: TripBrief) -> None:
     problem = brief_problem(brief)
     if problem:
         # Refused before any specialist runs, so the caller gets one reason
         # instead of a graph that fails four agents deep.
         raise ValueError(problem)
+
+
+def run_orchestrator(brief: TripBrief, options: OrchestratorOptions | None = None) -> TripPlan:
+    """Plan a brief, discarding progress.
+
+    The programmatic path: chat, decisions and tests call this. A caller that
+    wants to watch the specialists work iterates `run_orchestrator_stream`.
+    """
+    _checked_brief(brief)
     result = create_orchestrator_graph(options).invoke({"brief": brief})
     plan = result.get("plan")
     if plan is None:
         raise RuntimeError("The orchestrator graph finished without a trip plan.")
     return plan
+
+
+class PlanStream:
+    """One planning run as progress events, and the plan it produced.
+
+    A run is a single pass, so the plan cannot be the generator's return value
+    and still be readable by the caller that is consuming the events: iterate the
+    stream, then read `plan`. `plan` is None until the iterator is exhausted, and
+    the stream can only be consumed once.
+
+    The generator body runs on the consumer's thread, which is the point: the
+    specialists report through the graph's custom stream (and, under the
+    supervisor, from a thread pool), so a consumer never has to know which thread
+    a specialist ran on. `ui/live.py` existed to patch exactly that, and is gone.
+    """
+
+    def __init__(self, graph: Any, brief: TripBrief) -> None:
+        self._graph = graph
+        self._brief = brief
+        self._consumed = False
+        self.plan: TripPlan | None = None
+
+    def __iter__(self) -> Iterator[ProgressEvent]:
+        if self._consumed:
+            # Iterating again would silently run the whole graph a second time:
+            # five specialists, up to three rounds, and their model calls.
+            raise RuntimeError("A PlanStream drives one run and can only be consumed once.")
+        self._consumed = True
+
+        for mode, payload in self._graph.stream(
+            {"brief": self._brief}, stream_mode=["updates", "custom"]
+        ):
+            if mode == "custom":
+                yield payload
+            elif isinstance(payload, dict) and "plan" in payload.get("build_plan", {}):
+                self.plan = payload["build_plan"]["plan"]
+
+
+def run_orchestrator_stream(
+    brief: TripBrief, options: OrchestratorOptions | None = None
+) -> PlanStream:
+    """Plan a brief, reporting each specialist as it starts, finishes or fails."""
+    _checked_brief(brief)
+    return PlanStream(create_orchestrator_graph(options), brief)

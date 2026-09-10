@@ -10,16 +10,23 @@ Streamlit at all.
 ## Per-agent progress
 
 A planning run takes tens of seconds and involves five specialists across up to three rounds.
-Showing one spinner for all of that hides the part worth watching, so the orchestrator accepts an
-`on_progress` callback and emits an event as each specialist starts, finishes or fails:
+Showing one spinner for all of that hides the part worth watching, so a run reports an event as each
+specialist starts, finishes or fails:
 
 ```python
 ProgressEvent(type="agent_started", agent="itinerary", round=1)
 ```
 
-The UI opens one `st.empty()` placeholder per specialist before the run and repaints just that row
-as events arrive. Because the stream is consumed inside a single script run, each row updates in
-place:
+The events travel on the graph's custom stream, so the UI iterates `run_trip_chat_stream` on the
+script's own thread. It opens one `st.empty()` placeholder per specialist before the run and repaints
+just that row as events arrive:
+
+```python
+stream = run_trip_chat_stream(request, OrchestratorOptions())
+for event in stream:
+    slots[event.agent].markdown(agent_row(...))
+response = stream.response
+```
 
 ```
 ✅ Day plan — Complete
@@ -32,14 +39,15 @@ place:
 The round suffix is what makes the negotiation visible: it shows which specialists were sent back
 to re-plan and which settled on the first pass.
 
-The callback is wrapped by `ui.live.bind_to_script_run` before it is handed to the orchestrator, and
-that wrapper is load-bearing rather than decorative. Which thread the event arrives on is decided by
-the specialist, and under the supervisor the answer is "a LangGraph tool worker": `ToolNode` runs a
-batch of tool calls on a thread pool. A worker thread has no `ScriptRunContext`, so an unbound
-callback raises `NoSessionContext` inside the delegation tool — before the specialist has run — and
-the whole supervisor fan-out collapses to the deterministic fallback. The wrapper captures the
-context on the script's thread and re-attaches it on every call, which is also what makes it safe on
-a pooled thread that outlives one run.
+**Why a stream and not a callback.** This was a callback (`OrchestratorOptions.on_progress`) until it
+failed in a way worth remembering: which thread an event arrives on is decided by the specialist, and
+under the supervisor the answer is "a LangGraph tool worker", because `ToolNode` runs a batch of tool
+calls on a thread pool. A worker thread has no `ScriptRunContext`, so the widget write raised
+`NoSessionContext` *inside* the delegation tool — before the specialist had done anything — and the
+whole supervisor fan-out collapsed to the deterministic fallback. The first fix bound the run context
+to the worker thread (`ui/live.py`); that is gone, because streaming removes the question: the
+specialists publish, and only the consumer's thread touches a widget. `tests/test_supervisor_streaming.py`
+pins both halves, including that no module under `trip_planner/` imports Streamlit.
 
 ## Three views of one plan
 

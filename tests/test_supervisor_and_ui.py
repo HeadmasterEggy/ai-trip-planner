@@ -32,9 +32,7 @@ def ctx() -> AgentContext:
 
 
 def test_one_delegation_tool_per_specialist_with_a_stable_name(ctx):
-    tools = create_supervisor_tools(
-        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
-    )
+    tools = create_supervisor_tools(ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None)
     names = [t.name for t in tools]
     assert names == [
         "ask_itinerary_specialist",
@@ -44,17 +42,6 @@ def test_one_delegation_tool_per_specialist_with_a_stable_name(ctx):
         "ask_dining_specialist",
     ]
     assert all(t.description for t in tools)  # an empty description hides the tool
-
-
-def test_a_delegation_tool_runs_its_specialist_and_reports_progress(ctx):
-    seen, events = [], []
-    tools = create_supervisor_tools(
-        ALL_SPECIALISTS, DEMO_BRIEF, ctx, seen.append, lambda *a: events.append(a)
-    )
-    transport = next(t for t in tools if t.name == "ask_transport_specialist")
-    transport.invoke({})
-    assert [p.agent for p in seen] == ["transport"]
-    assert [e[0] for e in events] == ["agent_started", "agent_completed"]
 
 
 def test_the_delegation_tools_take_no_arguments(ctx):
@@ -68,10 +55,8 @@ def test_the_delegation_tools_take_no_arguments(ctx):
         tripId="t1", targetAgent="transport", reason="over budget", constraints=["cut 30%"]
     )
     tools = create_supervisor_tools(
-        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
-    ) + create_revision_tools(
-        ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
-    )
+        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None
+    ) + create_revision_tools(ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None)
 
     assert tools
     for entry in tools:
@@ -83,9 +68,7 @@ def test_revision_tools_are_built_only_for_pending_requests(ctx):
     request = RevisionRequest(
         tripId="t1", targetAgent="accommodation", reason="over budget", constraints=["cut 30%"]
     )
-    tools = create_revision_tools(
-        ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
-    )
+    tools = create_revision_tools(ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None)
     assert [t.name for t in tools] == ["revise_accommodation_specialist"]
 
 

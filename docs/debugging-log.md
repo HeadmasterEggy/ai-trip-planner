@@ -233,17 +233,23 @@ call died before doing any work. The supervisor collected nothing, raised
 dispatch. The visible cost was a frozen progress panel; the real cost was that
 the supervisor never ran at all.
 
-**Fix.** `ui.live.bind_to_script_run` captures the context on the script thread
-and re-attaches it per call, so worker threads enqueue their deltas on the
-session like any other write. Streamlit documents the self-attach case
-(`add_script_run_ctx` from inside the worker also seeds `ThreadState`), which is
-what keeps the write from raising instead of merely disappearing.
+**Fix.** First, a shim: `ui.live.bind_to_script_run` captured the context on the
+script thread and re-attached it per call, so worker threads enqueued their deltas
+on the session like any other write. Streamlit documents the self-attach case
+(`add_script_run_ctx` from inside the worker also seeds `ThreadState`), which kept
+the write from raising instead of merely disappearing.
+
+Then the mechanism that made the shim necessary was removed. Progress now travels
+on the graph's custom stream — a node writes with `get_stream_writer`, a
+delegation tool with `Runtime.stream_writer`, and the UI iterates the stream on
+its own thread — so no specialist touches a widget and there is no thread to bind.
+`ui/live.py` is deleted, and a test asserts that nothing under `trip_planner/`
+imports Streamlit at all (item 1.4 of `docs/framework-alignment.md`).
 
 The other half of the lesson is handled a level up: a specialist that raises used
-to take the whole fan-out with it, so the delegation tools are now wrapped in
+to take the whole fan-out with it, so the delegation tools are wrapped in
 `ToolErrorMiddleware` and a failure reaches the model as a `ToolMessage` it can
-work around (`supervisor_middleware`, and item 1.3 of
-`docs/framework-alignment.md`).
+work around (`supervisor_middleware`, and item 1.3).
 
 **How it was found.** The server log held `ThreadPoolExecutor-7_0` …
 `ThreadPoolExecutor-11_0`, five threads warning three times each — the shape of

@@ -10,6 +10,7 @@ falls back to deterministic output.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
@@ -270,3 +271,20 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str  # assistant text for the chat stream
     plan: TripPlan  # the fresh aggregated plan for the trip panel
+
+
+@dataclass
+class ProgressEvent:
+    """One specialist starting, finishing or failing.
+
+    It travels on the graph's custom stream rather than through a callback: a
+    node writes with `langgraph.config.get_stream_writer`, a delegation tool with
+    `ToolRuntime.stream_writer`, and the consumer reads it on its own thread. That
+    is what keeps Streamlit out of the specialist layer -- see item 1.4 of
+    `docs/framework-alignment.md`.
+    """
+
+    type: Literal["agent_started", "agent_completed", "agent_failed"]
+    agent: str
+    round: int
+    error: str | None = None

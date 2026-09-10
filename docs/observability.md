@@ -39,15 +39,19 @@ is invisible from the model calls alone, because the interesting decision happen
 
 ## Progress events
 
-Independently of LangSmith, the orchestrator emits a `ProgressEvent` as each specialist starts,
-completes or fails:
+Independently of LangSmith, a run reports a `ProgressEvent` as each specialist starts, completes or
+fails. It travels on the graph's custom stream:
 
 ```python
-run_orchestrator(brief, OrchestratorOptions(on_progress=handler))
+stream = run_orchestrator_stream(brief, OrchestratorOptions())
+for event in stream:
+    print(event.agent, event.type, event.round, event.error)
 ```
 
-The Streamlit UI uses this for its live per-agent rows. It is also the cheapest way to see round
-structure in a script: an event with `round=3` means that specialist was sent back twice.
+The Streamlit UI uses this for its live per-agent rows, iterating on its own thread — which is why no
+specialist needs to know anything about the UI, or about which thread it was run on. It is also the
+cheapest way to see round structure in a script: an event with `round=3` means that specialist was
+sent back twice.
 
 ## What a non-converging run looks like
 

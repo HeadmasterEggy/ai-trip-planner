@@ -24,13 +24,12 @@ _SRC = Path(__file__).parent / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from trip_planner.chat import run_trip_chat
+from trip_planner.chat import run_trip_chat_stream
 from trip_planner.contracts import ChatRequest, TripBrief, TripPlan, brief_problem
 from trip_planner.decisions import apply_decision
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
-from trip_planner.ui.live import bind_to_script_run
 from trip_planner.ui.render import (
     agent_row,
     budget_block,
@@ -46,7 +45,7 @@ from trip_planner.ui.render import (
     trace_block,
 )
 from trip_planner.ui.theme import CSS
-from trip_planner.workflow import OrchestratorOptions, ProgressEvent
+from trip_planner.workflow import OrchestratorOptions
 
 st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
 load_dotenv()
@@ -360,31 +359,30 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
         for name in state:
             slots[name].markdown(agent_row(LABELS[name], "queued", 1, None), unsafe_allow_html=True)
 
-        # The stream is consumed inside this single script run, so each event
-        # repaints its own row instead of leaving one opaque spinner.
-        def render_event(event: ProgressEvent) -> None:
-            state[event.agent] = event.type
-            slots[event.agent].markdown(
-                agent_row(LABELS[event.agent], event.type, event.round, event.error),
-                unsafe_allow_html=True,
-            )
-
-        # The supervisor delegates through LangGraph tools, and ToolNode runs a
-        # batch of tool calls on a thread pool. A worker thread has no script run
-        # context, so an unbound callback raises NoSessionContext inside the tool
-        # -- before the specialist has done anything -- and the whole delegation
-        # falls back. See `ui.live`.
-        on_progress = bind_to_script_run(render_event)
-
+        # The graph reports progress on its custom stream, so this loop runs on the
+        # script's own thread: no specialist ever touches a widget, whichever thread
+        # the supervisor's tool pool ran it on.
         try:
             with st.spinner("The team is planning…"):
-                response = run_trip_chat(
+                stream = run_trip_chat_stream(
                     ChatRequest(tripId=st.session_state.trip_id, message=message, brief=brief),
-                    OrchestratorOptions(on_progress=on_progress),
+                    OrchestratorOptions(),
                 )
+                for event in stream:
+                    state[event.agent] = event.type
+                    slots[event.agent].markdown(
+                        agent_row(LABELS[event.agent], event.type, event.round, event.error),
+                        unsafe_allow_html=True,
+                    )
+                response = stream.response
         except Exception as error:  # noqa: BLE001
             st.session_state.messages.append(
                 {"role": "assistant", "content": f"Planning failed: {error}"}
+            )
+            return
+        if response is None:  # cannot happen: the loop above drains the stream
+            st.session_state.messages.append(
+                {"role": "assistant", "content": "Planning failed: the run produced no plan."}
             )
             return
 
