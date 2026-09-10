@@ -17,6 +17,13 @@ negotiated, act on what needs a decision, and take the plan with you.
 8. Brief feasibility checked once, up front (`contracts.brief_problem`): the form, chat intake and
    the orchestrator all ask it, so an unplannable brief is refused with a reason instead of failing
    inside a specialist after the other four have run.
+9. Framework alignment: the orchestration now matches the documented patterns — role-based model
+   routing, per-run injection with one agent and one graph per process, worker results in graph
+   state, official resilience middleware, progress as a stream, and a checkpointer that pauses where
+   the plan escalates. [Framework alignment](framework-alignment.md) records each step and the three
+   assumptions it corrected.
+10. A run says what each section cost: which route would answer it and how long it took, in the
+   reasoning view and in the exported plan.
 
 ## Next
 
@@ -28,10 +35,6 @@ negotiated, act on what needs a decision, and take the plan with you.
    until one exists.
 3. **Richer trip surface.** An editable day timeline and a map view, with route, time and budget
    checks applied to edits.
-4. **Framework alignment.** The orchestration is the documented subagents + custom-workflow shape,
-   but four things are hand-rolled: dependency injection, result flow, human-in-the-loop and retry.
-   [Framework alignment](framework-alignment.md) has the strategy, the risks and the order.
-
 ## Out of scope
 
 Multi-user editing, social features, payments and booking fulfilment.
