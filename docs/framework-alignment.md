@@ -482,6 +482,56 @@ never writes a second copy.
 **Done when.** One function records a decision. *Shipped: no change was needed, and the test that
 would have caught a second writer (`test_a_confirmed_choice_outranks_a_budget_revision`) still passes.*
 
+### Wave 4 — Naming, consolidation, and latency — shipped
+
+#### 4.1 Say "agent" only where a model decides (S) — shipped, in the docs
+
+**Problem.** Three specialists are single structured calls and two are calculators, so "five specialist
+agents" overclaims. The README also claimed the five "research it in parallel", which was only true on
+the supervisor path — item 4.3 fixed that half.
+
+**Decision.** The code keeps the name `Specialist`, and the distinction is stated once, in
+`docs/agent-architecture.md`: the table there names the one agent (the supervisor), the three
+generations, the two calculators and the deterministic reconciler between them. Renaming the protocol
+to `Worker` would touch every specialist, every test and every doc for no functional gain, and
+`Specialist` is the contract the orchestrator actually sees. The README now says what holds them
+together is deterministic rather than negotiated.
+
+**Done when.** A reader can tell which parts deliberate and which compute. *Shipped.*
+
+#### 4.2 Do not adopt `SubAgentMiddleware`/Deep Agents yet (no work)
+
+`deepagents` offers `SubAgentMiddleware` and a `task` tool off the shelf
+([Prebuilt middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in#subagent)).
+It would replace ~150 lines of `supervisor.py`, at the cost of the two invariants that make this
+project's output checkable: the supervisor would decide **what** each subagent is told (1.2), and
+results would flow through the framework's own convention rather than through validation the
+deterministic layer controls. Revisit only if the worker count grows past what hand-written tools
+can carry.
+
+#### 4.3 Parallelise the deterministic dispatch (S) — shipped
+
+**Problem.** `deterministic_dispatch` was a sequential comprehension, so with no model -- the path
+every deployment without a key runs -- five independent specialists ran one after another. That is
+also the path whose latency *is* the plan's latency.
+
+**Shipped.** A bounded `ThreadPoolExecutor` over the specialists, one thread each. Two things made it
+safe that were not true a wave ago: the specialists report through per-invocation `extras` collected
+into state (2.2), so nothing depends on completion order; and the *reporting* stayed on the node's
+thread. That last one is a real constraint, not tidiness: a stream writer captured from the graph
+resolves its config from a context variable that does not cross threads and raises
+`Called get_config outside of a runnable context` (the finding recorded in 1.4). So the node writes
+`agent_started` for every specialist up front and each `agent_completed` as that future resolves,
+which also keeps the UI's rows updating while the others run.
+
+**Tests.** `test_the_deterministic_dispatch_runs_specialists_concurrently` uses a `barrier` rather than
+a stopwatch: it can only be passed if every specialist is inside its work at once, so it fails loudly
+rather than flakily. `test_progress_is_always_written_on_the_node_thread` pins the constraint that
+shaped the design.
+
+**Done when.** The no-key path overlaps its specialists, and the README's "in parallel" is true of both
+paths. *Shipped.*
+
 ## What not to change
 
 - **The deterministic conflict and budget rules** (`workflow.py:114`). They are the reason the
@@ -497,13 +547,15 @@ would have caught a second writer (`test_a_confirmed_choice_outranks_a_budget_re
 
 Per wave, in order:
 
-1. `uv run pytest -q` — 87 tests today; every item above names the tests it adds.
+1. `uv run pytest -q` — 112 tests today, up from 69 before the first wave; every item above names
+   the tests it adds.
 2. `uv run ruff check .` and `uv run ruff format --check .` — both clean today.
 3. Run the app with a key and without one, and diff the observable plan for the same brief. The
    offline path is the one CI exercises, and this project has already been bitten twice by that
    (`docs/debugging-log.md` entries #10 and #11).
-4. After Wave 3, one manual pause/resume through the UI, because no unit test proves the Streamlit
-   session survives an interrupt.
+4. One manual pause/resume through the UI. This was the last check the plan listed and it is now a
+   test: `AppTest` drives the real entry point through a pause (`set the budget to $1500` → +135% over
+   budget), clicks the button and asserts the escalation comes back approved.
 
 ## References
 
