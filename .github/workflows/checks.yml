@@ -1,0 +1,30 @@
+name: checks
+
+# The offline path is the one every commit is verified against. Two of the bugs in
+# docs/debugging-log.md were live-path-only, so the live path has its own opt-in job
+# below rather than being assumed by this one.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv sync --python ${{ matrix.python-version }}
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Test
+        # No provider key is present, so this exercises the deterministic path
+        # end to end: dispatch, conflict detection, revision, escalation.
+        run: uv run pytest -q
