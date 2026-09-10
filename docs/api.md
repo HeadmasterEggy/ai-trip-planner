@@ -18,8 +18,8 @@ from trip_planner.demo import DEMO_BRIEF
 response = run_trip_chat(
     ChatRequest(tripId="trip-demo", message="make it 4 people", brief=DEMO_BRIEF)
 )
-response.reply          # str, in the language of the message
-response.plan           # TripPlan
+response.reply  # str, in the language of the message
+response.plan  # TripPlan
 ```
 
 `brief` is optional; without it the demo brief is used. Passing the latest brief is what lets a
@@ -42,7 +42,7 @@ from trip_planner.specialists import ALL_SPECIALISTS
 plan = run_orchestrator(
     brief,
     OrchestratorOptions(
-        specialists=ALL_SPECIALISTS,   # explicit list = deterministic dispatch, no supervisor
+        specialists=ALL_SPECIALISTS,  # explicit list = deterministic dispatch, no supervisor
         max_rounds=3,
         on_progress=lambda event: print(event.agent, event.type, event.round),
     ),
@@ -64,12 +64,12 @@ plan = run_orchestrator(
 `TripPlan` is the aggregate the UI renders:
 
 ```python
-plan.sections        # one TripSection per specialist, with its AgentProposal
-plan.estTotal        # USD, whole trip
-plan.overrunPct      # (est - budget) / budget * 100; negative when under
-plan.hitl            # pending human decisions
-plan.negotiation     # per round: conflicts found, specialists re-planned
-plan.round           # the round the plan was built from
+plan.sections  # one TripSection per specialist, with its AgentProposal
+plan.estTotal  # USD, whole trip
+plan.overrunPct  # (est - budget) / budget * 100; negative when under
+plan.hitl  # pending human decisions
+plan.negotiation  # per round: conflicts found, specialists re-planned
+plan.round  # the round the plan was built from
 ```
 
 `negotiation` is the only record of *why* a plan looks the way it does. The orchestrator discards

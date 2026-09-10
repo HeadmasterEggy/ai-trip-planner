@@ -142,6 +142,36 @@ CSS = """
 .tp-bd__track > span { display: block; height: 100%; background: var(--tp-accent); border-radius: inherit; }
 .tp-bd__value { min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
 
+/* Inline choice cards: the decision happens where it is explained, rather than
+   sending the traveller somewhere else to make it. */
+.tp-opt {
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-radius-sm);
+  padding: 9px 11px;
+  margin-bottom: 6px;
+  background: #fff;
+}
+.tp-opt--picked { border-color: var(--tp-accent); background: var(--tp-accent-bg); }
+.tp-opt__head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.tp-opt__name { font-weight: 600; }
+.tp-opt__cost { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+.tp-opt__detail { color: var(--tp-text-dim); font-size: 11px; margin: 3px 0 0; }
+.tp-opt__flag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--tp-accent); font-weight: 600;
+}
+
+/* Numbered plan steps, mirroring the order a traveller settles them in. */
+.tp-step { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 4px; }
+.tp-step__n {
+  flex: none; width: 20px; height: 20px; border-radius: var(--tp-radius-pill);
+  background: var(--tp-accent); color: #fff; font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.tp-step__n--done { background: var(--tp-ok); }
+.tp-step__n--todo { background: var(--tp-warn-strong); color: #3a2a05; }
+.tp-step__body { flex: 1; min-width: 0; }
+
 /* Negotiation rounds. */
 .tp-rd {
   border: 1px solid var(--tp-border); border-radius: var(--tp-radius-sm);

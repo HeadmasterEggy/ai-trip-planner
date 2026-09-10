@@ -46,12 +46,30 @@ looking at, so this is the view that makes its work legible.
 which section is driving the total. A single budget bar says a plan is over; it
 does not say who to argue with, which is the only actionable question.
 
+**Steps** numbers the plan in the order a traveller settles it, marking what still needs them.
+
 **Negotiation** is round by round: what was found, who was sent back, and the
 exact constraint they received. The orchestrator discards this once it has a
 plan, so `TripPlan.negotiation` records it. It is also where a plan that never
 converged explains itself — the same conflict recurring in every round means the
 specialists involved had nothing further to give, which is a different problem
 from a plan that simply ran out of rounds.
+
+## Decisions in the conversation
+
+The specialists already compare candidates internally — accommodation weighs four stays per city
+and keeps one. Those candidates are now exposed as a `confirm_choice` checkpoint, and the choice is
+offered where it is explained rather than on a separate screen.
+
+Confirming one writes a `UserPreference` into long-term memory and re-plans the same brief. The
+specialist honours it through the seam it already reads, so nothing special-cases a decision after
+the fact, and the choice survives the next message rather than being re-decided.
+
+Nothing here blocks. A specialist has always pre-selected a sensible option, so a traveller who
+ignores every checkpoint still gets a complete plan.
+
+A confirmed choice also outranks a budget revision. A revision normally takes the cheapest eligible
+option; once the traveller has decided, a cost cut must not quietly undo it.
 
 ## Secrets
 

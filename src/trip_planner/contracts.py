@@ -105,14 +105,37 @@ class TripSection(BaseModel):
     proposal: AgentProposal | None = None
 
 
+class ChoiceOption(BaseModel):
+    """One candidate a traveller can pick between at a checkpoint.
+
+    Specialists already compare candidates internally; this exposes the ones
+    that were considered so the decision can be handed back rather than made
+    silently on the traveller's behalf.
+    """
+
+    id: str
+    label: str
+    detail: str
+    estCost: Annotated[float, Field(ge=0)] | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
+    recommended: bool = False
+
+
 class HitlCheckpoint(BaseModel):
     """A point where the flow pauses for the human, or escalates to them."""
 
     id: str
-    type: Literal["confirm_brief", "confirm_plan", "escalation"]
+    type: Literal["confirm_brief", "confirm_plan", "confirm_choice", "escalation"]
     title: str
     detail: str
     status: Literal["pending", "approved", "rejected"]
+    # Present on confirm_choice. Empty elsewhere, so a caller can treat any
+    # checkpoint uniformly and simply find nothing to offer.
+    options: list[ChoiceOption] = Field(default_factory=list)
+    selected: str | None = None
+    # The long-term preference key a decision writes to, which is how a choice
+    # survives into the next round instead of being re-decided.
+    preferenceKey: str | None = None
 
 
 class NegotiationRound(BaseModel):

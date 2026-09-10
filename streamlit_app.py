@@ -26,6 +26,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 
 from trip_planner.chat import run_trip_chat
 from trip_planner.contracts import ChatRequest, TripBrief, TripPlan
+from trip_planner.decisions import apply_decision
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
@@ -34,10 +35,12 @@ from trip_planner.ui.render import (
     budget_block,
     budget_breakdown,
     chip,
+    choice_option,
     negotiation,
     negotiation_verdict,
     plan_markdown,
     proposal_items,
+    step_row,
     timeline,
 )
 from trip_planner.ui.theme import CSS
@@ -178,6 +181,72 @@ def render_brief_form() -> TripBrief | None:
     )
 
 
+def render_decisions(plan: TripPlan) -> None:
+    """Offer the choices a specialist already weighed up.
+
+    They are never blocking: the specialist has pre-selected a sensible option,
+    so a traveller who skips these still has a complete plan.
+    """
+    choices = [c for c in plan.hitl if c.type == "confirm_choice"]
+    if not choices:
+        return
+
+    settled = sum(c.status == "approved" for c in choices)
+    st.markdown(
+        f"**Your choices** &nbsp;<span class='tp-note'>{settled} of "
+        f"{len(choices)} confirmed</span>",
+        unsafe_allow_html=True,
+    )
+
+    for checkpoint in choices:
+        with st.expander(checkpoint.title, expanded=checkpoint.status != "approved"):
+            labels = {o.id: o.label for o in checkpoint.options}
+            ids = list(labels)
+            current = checkpoint.selected if checkpoint.selected in ids else ids[0]
+            picked = st.radio(
+                checkpoint.detail,
+                ids,
+                index=ids.index(current),
+                # Bind the mapping now: a bare closure over `labels` would make
+                # every checkpoint render the last one's labels.
+                format_func=lambda i, labels=labels: labels[i],
+                key=f"choice-{checkpoint.id}",
+            )
+            st.markdown(
+                "".join(choice_option(o, o.id == picked) for o in checkpoint.options),
+                unsafe_allow_html=True,
+            )
+            disabled = picked == checkpoint.selected and checkpoint.status == "approved"
+            if st.button(
+                "Confirm and continue",
+                key=f"confirm-{checkpoint.id}",
+                type="primary",
+                disabled=disabled,
+                use_container_width=True,
+            ):
+                with st.spinner("Re-planning around your choice…"):
+                    st.session_state.plan = apply_decision(
+                        plan, checkpoint.id, picked, OrchestratorOptions()
+                    )
+                st.rerun()
+
+
+def render_steps(plan: TripPlan) -> None:
+    """The plan as numbered steps, in the order a traveller settles them."""
+    decided = {c.id: c.status for c in plan.hitl if c.type == "confirm_choice"}
+    rows = []
+    for number, section in enumerate(plan.sections, start=1):
+        if section.status == "needs_you":
+            state = "todo"
+        elif any(v == "approved" for k, v in decided.items() if section.id in k):
+            state = "done"
+        else:
+            state = "open"
+        cost = f" · ${section.estCost:,.0f}" if section.estCost else ""
+        rows.append(step_row(number, f"{section.label}{cost}", section.summary[:90], state))
+    st.markdown("".join(rows), unsafe_allow_html=True)
+
+
 VERDICT_STYLE = {
     "converged": st.success,
     "stuck": st.warning,
@@ -198,7 +267,12 @@ def render_plan(plan: TripPlan) -> None:
         shout = st.warning if checkpoint.type == "escalation" else st.info
         shout(f"**{checkpoint.title}** — {checkpoint.detail}")
 
-    day_tab, detail_tab, talks_tab = st.tabs(["Day by day", "By specialist", "Negotiation"])
+    steps_tab, day_tab, detail_tab, talks_tab = st.tabs(
+        ["Steps", "Day by day", "By specialist", "Negotiation"]
+    )
+
+    with steps_tab:
+        render_steps(plan)
 
     with day_tab:
         # Everything scheduled, from every specialist, on one axis. A transport
@@ -283,6 +357,7 @@ with plan_column:
         st.divider()
         render_plan(st.session_state.plan)
 
+
 EXAMPLES = [
     "Make it 4 people",
     "Cut the budget to $2,500",
@@ -294,6 +369,9 @@ with chat_column:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
+
+    if st.session_state.plan is not None:
+        render_decisions(st.session_state.plan)
 
     if not st.session_state.messages:
         # A bare input box does not say what this accepts. Offer the shapes that

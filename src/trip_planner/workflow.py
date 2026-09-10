@@ -32,6 +32,7 @@ from .budget import (
 )
 from .contracts import (
     AgentProposal,
+    ChoiceOption,
     HitlCheckpoint,
     NegotiationRound,
     RevisionRequest,
@@ -74,6 +75,11 @@ class OrchestratorOptions:
     mem: Any | None = None
     max_rounds: int = DEFAULT_MAX_ROUNDS
     on_progress: Callable[[ProgressEvent], None] | None = None
+    # Decisions already made by the traveller, as preference key -> chosen id.
+    # They are written into memory before planning so the specialists simply
+    # read them as confirmed preferences, rather than the graph special-casing
+    # a decision after the fact.
+    decisions: dict[str, str] | None = None
 
 
 class State(TypedDict, total=False):
@@ -175,6 +181,35 @@ def detect_conflicts(proposals: list[AgentProposal], brief: TripBrief) -> list[R
     ]
 
 
+def _choice_checkpoints(
+    choices: dict[str, list[ChoiceOption]], decided: dict[str, str]
+) -> list[HitlCheckpoint]:
+    """Turn the candidates a specialist considered into decisions on offer.
+
+    The specialist has already picked a sensible default, so these are never
+    blocking: a traveller who ignores them still gets a complete plan.
+    """
+    checkpoints = []
+    for city, options in sorted(choices.items()):
+        if len(options) < 2:
+            continue  # nothing to decide between
+        key = f"accommodation.stayChoice.{city}"
+        selected = decided.get(key) or next((o.id for o in options if o.recommended), None)
+        checkpoints.append(
+            HitlCheckpoint(
+                id=f"choose-stay-{city}",
+                type="confirm_choice",
+                title=f"Choose where to stay in {city}",
+                detail=f"{len(options)} options the specialist compared.",
+                status="approved" if key in decided else "pending",
+                options=options,
+                selected=selected,
+                preferenceKey=key,
+            )
+        )
+    return checkpoints
+
+
 def _build_hitl(
     brief: TripBrief, overrun_pct: float, unresolved: bool, max_rounds: int
 ) -> list[HitlCheckpoint]:
@@ -229,13 +264,20 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
     options = options or OrchestratorOptions()
     specialists, by_name, tools, mem, max_rounds = _resolve(options)
     injected_specialists = options.specialists is not None
+    decisions = options.decisions or {}
     emit = options.on_progress or (lambda event: None)
 
     def emit_raw(kind: str, agent: str, round_no: int, error: str | None) -> None:
         emit(ProgressEvent(kind, agent, round_no, error))  # type: ignore[arg-type]
 
+    # One context per run, so a specialist can report the candidates it weighed
+    # up through `extras` without the graph threading a return channel.
+    shared_extras: dict[str, Any] = {}
+
     def context(brief: TripBrief, round_no: int) -> AgentContext:
-        return AgentContext(tripId=brief.tripId, round=round_no, tools=tools, mem=mem)
+        return AgentContext(
+            tripId=brief.tripId, round=round_no, tools=tools, mem=mem, extras=shared_extras
+        )
 
     def run_one(specialist, brief, round_no, revision=None) -> AgentProposal:
         emit(ProgressEvent("agent_started", specialist.name, round_no))
@@ -346,7 +388,10 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                 estTotal=est_total,
                 overrunPct=overrun_pct,
                 sections=sections,
-                hitl=_build_hitl(brief, overrun_pct, unresolved, max_rounds),
+                hitl=[
+                    *_build_hitl(brief, overrun_pct, unresolved, max_rounds),
+                    *_choice_checkpoints(shared_extras.get("stay_choices", {}), decisions),
+                ],
                 negotiation=state.get("negotiation", []),
             )
         }

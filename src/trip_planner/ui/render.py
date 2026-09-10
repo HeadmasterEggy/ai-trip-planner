@@ -236,3 +236,28 @@ def negotiation_verdict(plan: TripPlan) -> tuple[str, str]:
             ),
         )
     return ("unresolved", f"{len(last.conflicts)} conflict(s) still open at the round limit.")
+
+
+def choice_option(option, picked: bool) -> str:
+    """One candidate at a decision point, marked when it is the current pick."""
+    cost = f'<span class="tp-opt__cost">${option.estCost:,.0f}</span>' if option.estCost else ""
+    flag = '<span class="tp-opt__flag">suggested</span>' if option.recommended else ""
+    return (
+        f'<div class="tp-opt{" tp-opt--picked" if picked else ""}">'
+        f'<div class="tp-opt__head"><span class="tp-opt__name">{_esc(option.label)}</span>'
+        f"{flag}{cost}</div>"
+        f'<p class="tp-opt__detail">{_esc(option.detail)}</p>'
+        "</div>"
+    )
+
+
+def step_row(number: int, title: str, detail: str, state: str) -> str:
+    """A numbered plan step. `state` is done, todo or open."""
+    suffix = {"done": " tp-step__n--done", "todo": " tp-step__n--todo"}.get(state, "")
+    return (
+        '<div class="tp-step">'
+        f'<span class="tp-step__n{suffix}">{number}</span>'
+        f'<span class="tp-step__body"><strong>{_esc(title)}</strong>'
+        f'<br><span class="tp-note">{_esc(detail)}</span></span>'
+        "</div>"
+    )

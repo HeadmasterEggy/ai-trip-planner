@@ -8,10 +8,17 @@ why the total is not simply one city's rate times the whole trip.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, UserPreference
+from ..contracts import (
+    AgentProposal,
+    ChoiceOption,
+    ProposalItem,
+    RevisionRequest,
+    TripBrief,
+    UserPreference,
+)
 from ..ports import AgentContext, StayOption
 from .base import FunctionSpecialist, cities, is_budget_revision
 
@@ -32,6 +39,15 @@ class StayPreferences:
     roomAllocation: str = "shared"
     minRating: float = 0.0
     freeCancellation: bool = False
+    # city -> the stay the traveller picked at a checkpoint. A confirmed choice
+    # outranks every soft default, including a budget revision's preference for
+    # the cheapest option: the traveller already decided.
+    chosen: dict[str, str] = field(default_factory=dict)
+
+
+def stay_choice_key(city: str) -> str:
+    """The long-term preference key a confirmed stay is written to."""
+    return f"accommodation.stayChoice.{city.strip()}"
 
 
 def read_preferences(prefs: list[UserPreference]) -> StayPreferences:
@@ -45,7 +61,9 @@ def read_preferences(prefs: list[UserPreference]) -> StayPreferences:
     cancellation = values.get("accommodation.freeCancellation", "false")
     if cancellation not in ("true", "false"):
         raise ValueError("accommodation.freeCancellation must be true or false.")
-    return StayPreferences(allocation, rating, cancellation == "true")
+    prefix = "accommodation.stayChoice."
+    chosen = {k[len(prefix) :]: v for k, v in values.items() if k.startswith(prefix)}
+    return StayPreferences(allocation, rating, cancellation == "true", chosen)
 
 
 def split_stay(brief: TripBrief) -> list[StaySegment]:
@@ -116,6 +134,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
     budget_revision = is_budget_revision(revision)
 
     items: list[ProposalItem] = []
+    offered: dict[str, tuple[StaySegment, list[StayOption], StayOption]] = {}
     total = 0.0
     for segment in segments:
         options = ctx.tools.booking.search_stays(
@@ -127,7 +146,15 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         eligible = eligible_options(options, prefs)
         if not eligible:
             continue
-        chosen = eligible[0] if budget_revision else choose_initial(eligible)
+        picked_name = prefs.chosen.get(segment.city)
+        confirmed = next((o for o in eligible if o.name == picked_name), None)
+        if confirmed is not None:
+            chosen = confirmed
+        elif budget_revision:
+            chosen = eligible[0]
+        else:
+            chosen = choose_initial(eligible)
+        offered[segment.city] = (segment, eligible, chosen)
         cost = stay_cost(chosen, segment.nights, rooms)
         total += cost
         items.append(
@@ -168,10 +195,39 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         f"{allocation}, so {brief.groupSize} travellers need {rooms} room(s).",
         "Rates come from the booking port and are estimates, not reservations or availability.",
     ]
-    assumptions.append(
-        "Budget revision selected the lowest eligible nightly rate in each city."
-        if budget_revision
-        else "Preferred a free-cancellation option rated 8.0 or better where one was eligible."
+    if prefs.chosen:
+        picked = ", ".join(f"{city}: {name}" for city, name in sorted(prefs.chosen.items()))
+        assumptions.append(f"Honoured the stay you confirmed ({picked}).")
+    else:
+        assumptions.append(
+            "Budget revision selected the lowest eligible nightly rate in each city."
+            if budget_revision
+            else "Preferred a free-cancellation option rated 8.0 or better where one was eligible."
+        )
+
+    ctx.extras.setdefault("stay_choices", {}).update(
+        {
+            city: [
+                ChoiceOption(
+                    id=option.name,
+                    label=option.name,
+                    detail=(
+                        f"{option.area} · {option.rating}/10 · USD "
+                        f"{option.pricePerNightUsd:.2f} per room/night · "
+                        f"{'free' if option.freeCancellation else 'no free'} cancellation"
+                    ),
+                    estCost=stay_cost(option, segment.nights, rooms),
+                    meta={
+                        "city": city,
+                        "nights": str(segment.nights),
+                        "rating": str(option.rating),
+                    },
+                    recommended=option.name == chosen.name,
+                )
+                for option in eligible
+            ]
+            for city, (segment, eligible, chosen) in offered.items()
+        }
     )
 
     return AgentProposal(
