@@ -149,6 +149,9 @@ class NegotiationRound(BaseModel):
     round: int
     conflicts: list[RevisionRequest]
     revised: list[str] = Field(default_factory=list)  # specialist names re-run after this round
+    # Set when a revision changed nothing for every specialist it targeted.
+    # Asking them again cannot help, so the negotiation stops here.
+    stalled: bool = False
 
 
 class TripPlan(BaseModel):

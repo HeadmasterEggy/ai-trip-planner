@@ -226,13 +226,14 @@ def negotiation_verdict(plan: TripPlan) -> tuple[str, str]:
     last = plan.negotiation[-1]
     if not last.conflicts:
         return ("converged", f"Settled in round {last.round} with nothing outstanding.")
-    reasons = {r.reason for entry in plan.negotiation for r in entry.conflicts}
-    if len(plan.negotiation) > 1 and len(reasons) == 1:
+    if any(entry.stalled for entry in plan.negotiation):
+        stalled_at = next(e.round for e in plan.negotiation if e.stalled)
         return (
             "stuck",
             (
-                f"The same conflict recurred in all {len(plan.negotiation)} rounds — "
-                "the specialists involved had nothing further to give."
+                f"Stopped after round {stalled_at}: the revision changed nothing, so the "
+                "specialists involved had nothing further to give. Another round would not "
+                "help — this needs a change to the brief."
             ),
         )
     return ("unresolved", f"{len(last.conflicts)} conflict(s) still open at the round limit.")

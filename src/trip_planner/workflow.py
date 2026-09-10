@@ -29,6 +29,7 @@ from .budget import (
     assess_budget,
     cost_of,
     roll_up_cost,
+    sum_usd,
 )
 from .contracts import (
     AgentProposal,
@@ -88,6 +89,7 @@ class State(TypedDict, total=False):
     proposals: list[AgentProposal]
     conflicts: list[RevisionRequest]
     negotiation: list[NegotiationRound]
+    stalled: bool
     plan: TripPlan
 
 
@@ -118,11 +120,22 @@ def detect_conflicts(proposals: list[AgentProposal], brief: TripBrief) -> list[R
         # Ask the two most expensive contributors, not everyone: a specialist
         # with no cost has nothing to give back.
         costly = sorted((p for p in proposals if cost_of(p) > 0), key=cost_of, reverse=True)[:2]
+        excess = sum_usd([cost_of(p) for p in proposals]) - brief.budgetTotal
+        share_total = sum(cost_of(p) for p in costly)
         for proposal in costly:
+            # Apportion the actual shortfall by each one's share of the spend,
+            # rather than asking for a flat 30%. A plan USD 30 over does not
+            # need two specialists to find USD 840 between them, and a plan far
+            # over needs more than 30% from each.
+            own = cost_of(proposal)
+            target = excess * (own / share_total) if share_total else excess
             add(
                 proposal.agent,
                 f"plan is {overrun_pct:.2f}% over budget",
-                f"cut {proposal.agent} cost by ~30%",
+                (
+                    f"cut {proposal.agent} cost by about USD {target:,.2f} "
+                    f"(from USD {own:,.2f}) to close the plan's USD {excess:,.2f} overrun"
+                ),
             )
 
     for proposal in proposals:
@@ -210,8 +223,24 @@ def _choice_checkpoints(
     return checkpoints
 
 
+def _escalation_detail(overrun_pct: float, unresolved: bool, stalled: bool, max_rounds: int) -> str:
+    """Say which of the two very different failures happened.
+
+    Running out of rounds means the negotiation was still moving; stalling means
+    it was not, and another round would not have helped.
+    """
+    if stalled:
+        return (
+            "The specialists involved had nothing further to give, so the negotiation "
+            "stopped early. This needs a change to the brief rather than another round."
+        )
+    if unresolved:
+        return f"Agents did not converge within {max_rounds} rounds."
+    return f"Plan is {overrun_pct:.2f}% over budget."
+
+
 def _build_hitl(
-    brief: TripBrief, overrun_pct: float, unresolved: bool, max_rounds: int
+    brief: TripBrief, overrun_pct: float, unresolved: bool, stalled: bool, max_rounds: int
 ) -> list[HitlCheckpoint]:
     items = [
         HitlCheckpoint(
@@ -231,11 +260,7 @@ def _build_hitl(
                 id="escalation",
                 type="escalation",
                 title="Needs a human decision",
-                detail=(
-                    f"Agents did not converge within {max_rounds} rounds."
-                    if unresolved
-                    else f"Plan is {overrun_pct:.2f}% over budget."
-                ),
+                detail=_escalation_detail(overrun_pct, unresolved, stalled, max_rounds),
                 status="pending",
             )
         )
@@ -341,27 +366,42 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
             )
 
         if injected_specialists:
-            return {
-                "round": round_no,
-                "proposals": deterministic_revision(),
-                "negotiation": history,
-            }
-        try:
-            proposals = revise_with_supervisor(
-                specialists,
-                state["proposals"],
-                requests,
-                brief,
-                context(brief, round_no),
-                emit_raw,
-            )
-        except Exception as error:  # noqa: BLE001
-            print(
-                "[supervisor] Revision delegation unavailable; using deterministic routing: "
-                f"{error}"
-            )
             proposals = deterministic_revision()
-        return {"round": round_no, "proposals": proposals, "negotiation": history}
+        else:
+            try:
+                proposals = revise_with_supervisor(
+                    specialists,
+                    state["proposals"],
+                    requests,
+                    brief,
+                    context(brief, round_no),
+                    emit_raw,
+                )
+            except Exception as error:  # noqa: BLE001
+                print(
+                    "[supervisor] Revision delegation unavailable; using deterministic "
+                    f"routing: {error}"
+                )
+                proposals = deterministic_revision()
+
+        # A revision that moved no money for any specialist it targeted has
+        # nothing further to give. Re-asking would spend the remaining rounds
+        # producing an identical plan, so record it and stop.
+        before = {p.agent: cost_of(p) for p in state["proposals"]}
+        after = {p.agent: cost_of(p) for p in proposals}
+        targeted = [r.targetAgent for r in requests]
+        stalled = bool(targeted) and all(
+            before.get(agent) == after.get(agent) for agent in targeted
+        )
+        if stalled and history:
+            history[-1] = history[-1].model_copy(update={"stalled": True})
+
+        return {
+            "round": round_no,
+            "proposals": proposals,
+            "negotiation": history,
+            "stalled": stalled,
+        }
 
     def build_plan(state: State) -> State:
         brief, proposals, conflicts = state["brief"], state["proposals"], state["conflicts"]
@@ -389,7 +429,9 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                 overrunPct=overrun_pct,
                 sections=sections,
                 hitl=[
-                    *_build_hitl(brief, overrun_pct, unresolved, max_rounds),
+                    *_build_hitl(
+                        brief, overrun_pct, unresolved, state.get("stalled", False), max_rounds
+                    ),
                     *_choice_checkpoints(shared_extras.get("stay_choices", {}), decisions),
                 ],
                 negotiation=state.get("negotiation", []),
@@ -397,11 +439,11 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
         }
 
     def route_after_detection(state: State) -> str:
-        return (
-            "revise_conflicts"
-            if state["conflicts"] and state["round"] < max_rounds
-            else "build_plan"
-        )
+        if not state["conflicts"] or state["round"] >= max_rounds:
+            return "build_plan"
+        if state.get("stalled"):
+            return "build_plan"
+        return "revise_conflicts"
 
     graph = StateGraph(State)
     graph.add_node("dispatch_specialists", dispatch)

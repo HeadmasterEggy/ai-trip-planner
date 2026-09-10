@@ -12,22 +12,18 @@ negotiated, act on what needs a decision, and take the plan with you.
 5. A UI that shows the negotiation — day-by-day timeline, budget breakdown, round-by-round record.
 6. Executable HITL: a stay choice is offered, recorded as a confirmed preference and re-planned
    around, and it outranks a later budget revision.
+7. Budget negotiation that asks for the actual shortfall, apportioned by share of the spend, and
+   stops as soon as a revision changes nothing rather than spending the remaining rounds.
 
 ## Next
 
-1. **Make budget negotiation effective.** Currently any overrun re-triggers a revision, but once
-   transport and accommodation are at their floor there is nothing left to give, so the graph burns
-   its remaining rounds and escalates. The `Negotiation` view now diagnoses this — the same conflict
-   recurring every round — which makes it the obvious next thing to fix. Options: let a specialist
-   signal "at my floor", apportion the cut by share of the overrun, or escalate early instead of
-   spinning.
-2. **Durable memory.** `InMemoryStore` loses everything on restart, and `promote()` is what would
+1. **Durable memory.** `InMemoryStore` loses everything on restart, and `promote()` is what would
    let a stated dietary preference survive into the next session — dining currently reports "no
    confirmed dietary preferences" because long-term memory is always empty.
-3. **Real place and booking data.** `USE_MOCK_TOOLS=false` already switches maps to OpenStreetMap.
+2. **Real place and booking data.** `USE_MOCK_TOOLS=false` already switches maps to OpenStreetMap.
    Booking has no live provider; fixtures are clearly labelled as fictional and must stay that way
    until one exists.
-4. **Richer trip surface.** An editable day timeline and a map view, with route, time and budget
+3. **Richer trip surface.** An editable day timeline and a map view, with route, time and budget
    checks applied to edits.
 
 ## Out of scope

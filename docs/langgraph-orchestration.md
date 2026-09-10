@@ -55,6 +55,33 @@ changing trip dates
 With that, the graph converges in round 2 on the demo brief, which also removes a full round of
 model calls.
 
+## Sizing the ask, and knowing when to stop
+
+An earlier version asked every costly specialist for a flat "~30%" regardless of the actual
+shortfall. A plan USD 30 over budget was telling two specialists to find USD 840 between them,
+which overshoots; a plan far over was asking for less than it needed. The constraint now names the
+real number, apportioned by each one's share of the spend:
+
+```
+cut accommodation cost by about USD 886.50 (from USD 2,600.00) to close the plan's USD 1,490.00 overrun
+```
+
+It also could not tell the difference between "still negotiating" and "nobody has anything left".
+Once transport and accommodation reached their floor, every remaining round re-asked and produced
+an identical plan.
+
+`revise_conflicts` now compares the cost of every specialist it targeted before and after. If none
+of them moved, the revision achieved nothing, asking again cannot help, and the graph routes
+straight to `build_plan` with `stalled` recorded on that round. Raising `max_rounds` to eight no
+longer changes the outcome — it stops at the same round.
+
+The two failures read differently, because they need different responses:
+
+| Outcome | Escalation says |
+| --- | --- |
+| Ran out of rounds while still moving | `Agents did not converge within N rounds.` |
+| Stalled | `The specialists involved had nothing further to give ... This needs a change to the brief rather than another round.` |
+
 ## Budget policy
 
 Money is summed in integer cents, because repeated float addition can drift a total across a policy
