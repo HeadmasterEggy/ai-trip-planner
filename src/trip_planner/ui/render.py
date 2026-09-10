@@ -104,3 +104,135 @@ def plan_markdown(plan: TripPlan) -> str:
             lines.append(f"- {when}{item.location or item.kind}{cost}: {item.detail}")
         lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Cross-section views. The plan stores proposals per specialist, but a traveller
+# reads a trip by day and a reviewer reads it by disagreement, so both of those
+# have to be reassembled here.
+# ---------------------------------------------------------------------------
+
+
+def scheduled_days(plan: TripPlan) -> dict[int, list[tuple[str, ProposalItem]]]:
+    """Group every timed item across all specialists by day.
+
+    Activities and transport legs live in different sections, so a clash is
+    invisible until they are put on the same axis -- which is exactly what the
+    orchestrator's conflict detection is looking at.
+    """
+    days: dict[int, list[tuple[str, ProposalItem]]] = {}
+    for section in plan.sections:
+        for item in section.proposal.items if section.proposal else []:
+            if item.day is None:
+                continue
+            days.setdefault(item.day, []).append((section.id, item))
+    for entries in days.values():
+        entries.sort(key=lambda pair: pair[1].startTime or "")
+    return dict(sorted(days.items()))
+
+
+def timeline(plan: TripPlan) -> str:
+    days = scheduled_days(plan)
+    if not days:
+        return '<p class="tp-note">No dated items yet.</p>'
+    blocks = []
+    for day, entries in days.items():
+        rows = []
+        for agent, item in entries:
+            when = (
+                f"{_esc(item.startTime)}–{_esc(item.endTime)}"
+                if item.startTime and item.endTime
+                else "unscheduled"
+            )
+            cost = f"${item.estCost:,.0f}" if item.estCost else ""
+            rows.append(
+                f'<div class="tp-tl__row tp-tl__row--{_esc(agent)}">'
+                f'<span class="tp-tl__when">{when}</span>'
+                f'<span class="tp-tl__what"><strong>{_esc(item.location or item.kind)}</strong>'
+                f'<br><span class="tp-note">{_esc(item.detail[:110])}</span></span>'
+                f'<span class="tp-tl__cost">{cost}</span>'
+                "</div>"
+            )
+        blocks.append(
+            f'<div class="tp-tl__day"><div class="tp-tl__head">Day {day}</div>{"".join(rows)}</div>'
+        )
+    return f'<div class="tp-tl">{"".join(blocks)}</div>'
+
+
+def budget_breakdown(plan: TripPlan) -> str:
+    """Which section is driving the total.
+
+    A single bar says a plan is over budget; it does not say which specialist to
+    argue with, which is the only actionable question.
+    """
+    priced = [s for s in plan.sections if s.estCost > 0]
+    if not priced:
+        return ""
+    largest = max(s.estCost for s in priced)
+    rows = []
+    for section in sorted(priced, key=lambda s: s.estCost, reverse=True):
+        share = section.estCost / plan.estTotal * 100 if plan.estTotal else 0
+        width = section.estCost / largest * 100 if largest else 0
+        rows.append(
+            '<div class="tp-bd__row">'
+            f'<span class="tp-bd__label">{_esc(section.label)}</span>'
+            f'<span class="tp-bd__track"><span style="width:{width:.1f}%"></span></span>'
+            f'<span class="tp-bd__value">${section.estCost:,.0f}'
+            f'<span class="tp-note"> · {share:.0f}%</span></span>'
+            "</div>"
+        )
+    return f'<div class="tp-bd">{"".join(rows)}</div>'
+
+
+def negotiation(plan: TripPlan) -> str:
+    """Round-by-round: what was found, and the exact constraint that was sent."""
+    if not plan.negotiation:
+        return '<p class="tp-note">No negotiation was recorded for this plan.</p>'
+    blocks = []
+    for entry in plan.negotiation:
+        if not entry.conflicts:
+            blocks.append(
+                f'<div class="tp-rd tp-rd--clear"><div class="tp-rd__head">'
+                f"Round {entry.round} — no conflicts</div></div>"
+            )
+            continue
+        items = []
+        for request in entry.conflicts:
+            acted = request.targetAgent in entry.revised
+            badge = (
+                '<span class="tp-chip tp-chip--planning">re-planned</span>'
+                if acted
+                else '<span class="tp-chip tp-chip--needs_you">not re-planned</span>'
+            )
+            constraints = "".join(f"<li>{_esc(c)}</li>" for c in request.constraints)
+            items.append(
+                '<div class="tp-rd__item">'
+                f"<div><strong>{_esc(request.targetAgent)}</strong> {badge}</div>"
+                f'<div class="tp-note">{_esc(request.reason)}</div>'
+                f"<ul>{constraints}</ul>"
+                "</div>"
+            )
+        blocks.append(
+            f'<div class="tp-rd"><div class="tp-rd__head">Round {entry.round} — '
+            f"{len(entry.conflicts)} conflict(s)</div>{''.join(items)}</div>"
+        )
+    return "".join(blocks)
+
+
+def negotiation_verdict(plan: TripPlan) -> tuple[str, str]:
+    """A one-line read on whether the rounds actually achieved anything."""
+    if not plan.negotiation:
+        return ("unknown", "No negotiation recorded.")
+    last = plan.negotiation[-1]
+    if not last.conflicts:
+        return ("converged", f"Settled in round {last.round} with nothing outstanding.")
+    reasons = {r.reason for entry in plan.negotiation for r in entry.conflicts}
+    if len(plan.negotiation) > 1 and len(reasons) == 1:
+        return (
+            "stuck",
+            (
+                f"The same conflict recurred in all {len(plan.negotiation)} rounds — "
+                "the specialists involved had nothing further to give."
+            ),
+        )
+    return ("unresolved", f"{len(last.conflicts)} conflict(s) still open at the round limit.")

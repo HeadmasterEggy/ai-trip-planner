@@ -32,9 +32,13 @@ from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
     agent_row,
     budget_block,
+    budget_breakdown,
     chip,
+    negotiation,
+    negotiation_verdict,
     plan_markdown,
     proposal_items,
+    timeline,
 )
 from trip_planner.ui.theme import CSS
 from trip_planner.workflow import OrchestratorOptions, ProgressEvent
@@ -174,6 +178,14 @@ def render_brief_form() -> TripBrief | None:
     )
 
 
+VERDICT_STYLE = {
+    "converged": st.success,
+    "stuck": st.warning,
+    "unresolved": st.warning,
+    "unknown": st.info,
+}
+
+
 def render_plan(plan: TripPlan) -> None:
     st.subheader(plan.brief.destination)
     st.caption(
@@ -186,16 +198,38 @@ def render_plan(plan: TripPlan) -> None:
         shout = st.warning if checkpoint.type == "escalation" else st.info
         shout(f"**{checkpoint.title}** — {checkpoint.detail}")
 
-    for section in plan.sections:
-        header = f"{section.label} — ${section.estCost:,.2f}"
-        with st.expander(header, expanded=section.status == "needs_you"):
-            st.markdown(chip(section.status), unsafe_allow_html=True)
-            st.write(section.summary)
-            st.markdown(proposal_items(section.proposal), unsafe_allow_html=True)
-            if section.proposal and section.proposal.assumptions:
-                with st.popover(f"Important notes ({len(section.proposal.assumptions)})"):
-                    for note in section.proposal.assumptions:
-                        st.markdown(f"- {note}")
+    day_tab, detail_tab, talks_tab = st.tabs(["Day by day", "By specialist", "Negotiation"])
+
+    with day_tab:
+        # Everything scheduled, from every specialist, on one axis. A transport
+        # leg and an activity only look like a clash when they share a column.
+        st.markdown(timeline(plan), unsafe_allow_html=True)
+        st.caption("Colour marks the owning specialist. Transport legs are fixed; activities move.")
+
+    with detail_tab:
+        st.markdown("**Where the money goes**")
+        st.markdown(budget_breakdown(plan), unsafe_allow_html=True)
+        st.divider()
+        for section in plan.sections:
+            header = f"{section.label} — ${section.estCost:,.2f}"
+            with st.expander(header, expanded=section.status == "needs_you"):
+                st.markdown(chip(section.status), unsafe_allow_html=True)
+                st.write(section.summary)
+                st.markdown(proposal_items(section.proposal), unsafe_allow_html=True)
+                if section.proposal and section.proposal.assumptions:
+                    with st.popover(f"Important notes ({len(section.proposal.assumptions)})"):
+                        for note in section.proposal.assumptions:
+                            st.markdown(f"- {note}")
+
+    with talks_tab:
+        verdict, explanation = negotiation_verdict(plan)
+        VERDICT_STYLE[verdict](explanation)
+        st.caption(
+            "Each round: what the orchestrator found, and the exact constraint it sent back. "
+            "A specialist only ever sees its own proposal, so the constraint has to name the "
+            "window it must avoid and who holds it."
+        )
+        st.markdown(negotiation(plan), unsafe_allow_html=True)
 
     st.download_button(
         "Download plan as Markdown",
@@ -249,18 +283,30 @@ with plan_column:
         st.divider()
         render_plan(st.session_state.plan)
 
+EXAMPLES = [
+    "Make it 4 people",
+    "Cut the budget to $2,500",
+    "去京都，2026-10-01 到 2026-10-05，三个人",
+]
+
 with chat_column:
     st.markdown("**Conversation**")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
-    if not st.session_state.messages:
-        st.caption(
-            "Ask for a change in plain language — for example "
-            "“make it 3 people” or “去京都，预算 3000”."
-        )
 
-prompt = st.chat_input("Tell the team what to change…")
+    if not st.session_state.messages:
+        # A bare input box does not say what this accepts. Offer the shapes that
+        # actually work, including a non-English one, since the reply follows the
+        # language of the request.
+        st.caption("Ask for a change in plain language. Try one of these:")
+        for index, example in enumerate(EXAMPLES):
+            if st.button(example, key=f"example-{index}", use_container_width=True):
+                st.session_state.pending = example
+                st.rerun()
+
+# A clicked example and a typed message take the same path from here.
+prompt = st.chat_input("Tell the team what to change…") or st.session_state.pop("pending", None)
 
 if submitted_brief is not None:
     plan_trip(

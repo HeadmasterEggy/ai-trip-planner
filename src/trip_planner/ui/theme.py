@@ -106,6 +106,53 @@ CSS = """
 
 .tp-note { color: var(--tp-text-mut); font-size: 12px; }
 
+/* Day timeline. Items from different specialists share one axis, which is the
+   only way a clash between them is visible to a reader. */
+.tp-tl__day { margin-bottom: 14px; }
+.tp-tl__head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--tp-text-mut); font-weight: 600; margin-bottom: 6px;
+}
+.tp-tl__row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 7px 10px; margin-bottom: 4px;
+  border-left: 3px solid var(--tp-border);
+  background: var(--tp-surface-2);
+  border-radius: 0 var(--tp-radius-sm) var(--tp-radius-sm) 0;
+  font-size: 12px;
+}
+/* Colour by owner so transport reads as fixed and activities as movable. */
+.tp-tl__row--transport { border-left-color: #0369a1; }
+.tp-tl__row--itinerary { border-left-color: var(--tp-accent); }
+.tp-tl__row--accommodation { border-left-color: #7c3aed; }
+.tp-tl__row--dining { border-left-color: #b45309; }
+.tp-tl__when {
+  min-width: 84px; font-variant-numeric: tabular-nums; color: var(--tp-text-dim);
+}
+.tp-tl__what { flex: 1; min-width: 0; }
+.tp-tl__cost { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Budget breakdown: a single total says a plan is over; this says who by. */
+.tp-bd__row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px; }
+.tp-bd__label { min-width: 120px; color: var(--tp-text-dim); }
+.tp-bd__track {
+  flex: 1; height: 8px; background: var(--tp-surface-2);
+  border-radius: var(--tp-radius-pill); overflow: hidden;
+}
+.tp-bd__track > span { display: block; height: 100%; background: var(--tp-accent); border-radius: inherit; }
+.tp-bd__value { min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Negotiation rounds. */
+.tp-rd {
+  border: 1px solid var(--tp-border); border-radius: var(--tp-radius-sm);
+  padding: 10px 12px; margin-bottom: 8px;
+}
+.tp-rd--clear { border-left: 3px solid var(--tp-ok); }
+.tp-rd__head { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.tp-rd__item { border-top: 1px solid var(--tp-border); padding-top: 8px; margin-top: 8px; font-size: 12px; }
+.tp-rd__item:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.tp-rd__item ul { margin: 4px 0 0; padding-left: 18px; color: var(--tp-text-dim); }
+
 @media (prefers-reduced-motion: reduce) {
   .tp-dot { animation: none; }
 }

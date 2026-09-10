@@ -32,6 +32,27 @@ place:
 The round suffix is what makes the negotiation visible: it shows which specialists were sent back
 to re-plan and which settled on the first pass.
 
+## Three views of one plan
+
+The plan is stored per specialist, but nobody reads it that way. Two of the
+three tabs reassemble it.
+
+**Day by day** puts every timed item from every specialist on one axis, coloured
+by owner. A transport leg and an activity only look like a clash when they share
+a column — which is exactly what the orchestrator's conflict detection is
+looking at, so this is the view that makes its work legible.
+
+**By specialist** keeps the per-agent proposals, and leads with a breakdown of
+which section is driving the total. A single budget bar says a plan is over; it
+does not say who to argue with, which is the only actionable question.
+
+**Negotiation** is round by round: what was found, who was sent back, and the
+exact constraint they received. The orchestrator discards this once it has a
+plan, so `TripPlan.negotiation` records it. It is also where a plan that never
+converged explains itself — the same conflict recurring in every round means the
+specialists involved had nothing further to give, which is a different problem
+from a plan that simply ran out of rounds.
+
 ## Secrets
 
 `_load_cloud_secrets()` copies supported keys from `st.secrets` into the environment when a

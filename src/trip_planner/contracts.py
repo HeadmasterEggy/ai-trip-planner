@@ -115,6 +115,19 @@ class HitlCheckpoint(BaseModel):
     status: Literal["pending", "approved", "rejected"]
 
 
+class NegotiationRound(BaseModel):
+    """What one round of the negotiation found and who was asked to fix it.
+
+    The orchestrator discards this once it has a plan, but it is the only
+    record of *why* the plan looks the way it does: which specialists were sent
+    back, and under exactly what constraint.
+    """
+
+    round: int
+    conflicts: list[RevisionRequest]
+    revised: list[str] = Field(default_factory=list)  # specialist names re-run after this round
+
+
 class TripPlan(BaseModel):
     """The aggregated artifact the UI renders."""
 
@@ -126,6 +139,8 @@ class TripPlan(BaseModel):
     overrunPct: float  # (estTotal - budgetTotal) / budgetTotal * 100, can be negative
     sections: list[TripSection]
     hitl: list[HitlCheckpoint]
+    # Additive with a default, so an older caller keeps working.
+    negotiation: list[NegotiationRound] = Field(default_factory=list)
 
 
 class ChatTurn(BaseModel):

@@ -33,6 +33,7 @@ from .budget import (
 from .contracts import (
     AgentProposal,
     HitlCheckpoint,
+    NegotiationRound,
     RevisionRequest,
     TripBrief,
     TripPlan,
@@ -80,6 +81,7 @@ class State(TypedDict, total=False):
     round: int
     proposals: list[AgentProposal]
     conflicts: list[RevisionRequest]
+    negotiation: list[NegotiationRound]
     plan: TripPlan
 
 
@@ -268,7 +270,10 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
         return {"round": 1, "proposals": proposals}
 
     def detect(state: State) -> State:
-        return {"conflicts": detect_conflicts(state["proposals"], state["brief"])}
+        conflicts = detect_conflicts(state["proposals"], state["brief"])
+        history = list(state.get("negotiation", []))
+        history.append(NegotiationRound(round=state["round"], conflicts=conflicts))
+        return {"conflicts": conflicts, "negotiation": history}
 
     def revise(state: State) -> State:
         round_no = state["round"] + 1
@@ -287,8 +292,18 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                 out.append(run_one(specialist, brief, round_no, request))
             return out
 
+        history = list(state.get("negotiation", []))
+        if history:
+            history[-1] = history[-1].model_copy(
+                update={"revised": [r.targetAgent for r in requests]}
+            )
+
         if injected_specialists:
-            return {"round": round_no, "proposals": deterministic_revision()}
+            return {
+                "round": round_no,
+                "proposals": deterministic_revision(),
+                "negotiation": history,
+            }
         try:
             proposals = revise_with_supervisor(
                 specialists,
@@ -304,7 +319,7 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                 f"{error}"
             )
             proposals = deterministic_revision()
-        return {"round": round_no, "proposals": proposals}
+        return {"round": round_no, "proposals": proposals, "negotiation": history}
 
     def build_plan(state: State) -> State:
         brief, proposals, conflicts = state["brief"], state["proposals"], state["conflicts"]
@@ -332,6 +347,7 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                 overrunPct=overrun_pct,
                 sections=sections,
                 hitl=_build_hitl(brief, overrun_pct, unresolved, max_rounds),
+                negotiation=state.get("negotiation", []),
             )
         }
 
