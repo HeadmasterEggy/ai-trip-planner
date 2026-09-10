@@ -27,9 +27,9 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
-from langchain.tools import tool
+from langchain.tools import ToolRuntime, tool
 
-from .contracts import AgentProposal, RevisionRequest, TripBrief
+from .contracts import AgentProposal, ProgressEvent, RevisionRequest, TripBrief
 from .models import create_routed_chat_model
 from .ports import AgentContext
 
@@ -76,6 +76,17 @@ def _tool_failure_message(error: Exception, request: Any) -> str:
     )
 
 
+def _worth_retrying(error: Exception) -> bool:
+    """Retry the failures that might not repeat; not our own validation.
+
+    The specialists raise ValueError for deterministic problems -- no eligible
+    stay, a draft that failed validation, a revision they have no lever for. The
+    same input produces the same failure, and under the supervisor a second
+    attempt costs model calls, so those go straight to the error handler.
+    """
+    return not isinstance(error, ValueError)
+
+
 def supervisor_middleware(tool_count: int) -> list[Any]:
     """Resilience for the supervisor loop, in the order the hooks nest.
 
@@ -91,7 +102,7 @@ def supervisor_middleware(tool_count: int) -> list[Any]:
         # the model can work around -- before this it took the whole fan-out with
         # it (see docs/debugging-log.md, entry 11).
         ToolErrorMiddleware(on_error=_tool_failure_message),
-        ToolRetryMiddleware(max_retries=1, on_failure="error"),
+        ToolRetryMiddleware(max_retries=1, retry_on=_worth_retrying, on_failure="error"),
         ToolCallLimitMiddleware(run_limit=tool_count * TOOL_CALLS_PER_SPECIALIST),
         # Model chain. A transient provider failure is retried and backed off
         # instead of silently downgrading every section to its fallback, which is
@@ -106,7 +117,6 @@ def create_supervisor_tools(
     brief: TripBrief,
     ctx: AgentContext,
     on_proposal: Callable[[AgentProposal], None],
-    on_progress: Callable[[str, str, int, str | None], None],
 ) -> list[Any]:
     """One tool per specialist, bound to this run's brief and context.
 
@@ -116,6 +126,12 @@ def create_supervisor_tools(
     derives its own prompt from the brief. An argument would be somewhere for the
     model to restate the request, and the deterministic rules downstream would
     then be checking the restatement rather than what the traveller asked for.
+
+    Progress goes out through `runtime.stream_writer`, which is the documented way
+    for a tool to narrate itself. It has to be the runtime's writer and not a
+    writer captured from the graph: `ToolNode` runs a batch of tool calls on a
+    thread pool, and a captured writer resolves its config from a context variable
+    that does not cross threads.
     """
     tools = []
     for specialist in specialists:
@@ -128,14 +144,16 @@ def create_supervisor_tools(
                     "Use this when its domain is needed for the requested plan."
                 ),
             )
-            def delegate() -> str:
-                on_progress("agent_started", specialist.name, ctx.round, None)
+            def delegate(runtime: ToolRuntime) -> str:
+                runtime.stream_writer(ProgressEvent("agent_started", specialist.name, ctx.round))
                 try:
                     proposal = specialist.invoke(brief, ctx, None)
                 except Exception as error:
-                    on_progress("agent_failed", specialist.name, ctx.round, str(error))
+                    runtime.stream_writer(
+                        ProgressEvent("agent_failed", specialist.name, ctx.round, str(error))
+                    )
                     raise
-                on_progress("agent_completed", specialist.name, ctx.round, None)
+                runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, ctx.round))
                 on_proposal(proposal)
                 return f"{specialist.label}: {proposal.summary}"
 
@@ -151,7 +169,6 @@ def create_revision_tools(
     brief: TripBrief,
     ctx: AgentContext,
     on_proposal: Callable[[AgentProposal], None],
-    on_progress: Callable[[str, str, int, str | None], None],
 ) -> list[Any]:
     """One immutable tool per pending revision request.
 
@@ -174,14 +191,16 @@ def create_revision_tools(
                     "specialist. The request is immutable and already targets this specialist."
                 ),
             )
-            def delegate() -> str:
-                on_progress("agent_started", specialist.name, ctx.round, None)
+            def delegate(runtime: ToolRuntime) -> str:
+                runtime.stream_writer(ProgressEvent("agent_started", specialist.name, ctx.round))
                 try:
                     proposal = specialist.invoke(brief, ctx, request)
                 except Exception as error:
-                    on_progress("agent_failed", specialist.name, ctx.round, str(error))
+                    runtime.stream_writer(
+                        ProgressEvent("agent_failed", specialist.name, ctx.round, str(error))
+                    )
                     raise
-                on_progress("agent_completed", specialist.name, ctx.round, None)
+                runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, ctx.round))
                 if proposal.agent != request.targetAgent:
                     raise ValueError(
                         f"Revision tool returned {proposal.agent} for {request.targetAgent}."
@@ -195,11 +214,25 @@ def create_revision_tools(
     return tools
 
 
+def _forward_custom_events(
+    agent: Any, payload: dict[str, Any], forward: Callable[[Any], None]
+) -> None:
+    """Run the nested agent, passing its custom events to our stream.
+
+    The delegation tools write to the nested run's stream; a nested run is not
+    part of the outer graph's stream, so the hop has to be explicit. It happens
+    here, on the node's thread, which is what keeps the write off the tool's
+    thread pool.
+    """
+    for event in agent.stream(payload, stream_mode="custom"):
+        forward(event)
+
+
 def dispatch_with_supervisor(
     specialists: list[Any],
     brief: TripBrief,
     ctx: AgentContext,
-    on_progress: Callable[[str, str, int, str | None], None],
+    forward_progress: Callable[[ProgressEvent], None],
 ) -> list[AgentProposal]:
     """Run the supervisor tool loop and return the proposals it collected.
 
@@ -212,7 +245,7 @@ def dispatch_with_supervisor(
 
     collected: dict[str, AgentProposal] = {}
     tools = create_supervisor_tools(
-        specialists, brief, ctx, lambda p: collected.__setitem__(p.agent, p), on_progress
+        specialists, brief, ctx, lambda p: collected.__setitem__(p.agent, p)
     )
     supervisor = create_agent(
         model=model,
@@ -220,7 +253,8 @@ def dispatch_with_supervisor(
         system_prompt=DISPATCH_PROMPT,
         middleware=supervisor_middleware(len(tools)),
     )
-    supervisor.invoke(
+    _forward_custom_events(
+        supervisor,
         {
             "messages": [
                 {
@@ -231,7 +265,8 @@ def dispatch_with_supervisor(
                     ),
                 }
             ]
-        }
+        },
+        forward_progress,
     )
     if not collected:
         raise RuntimeError("Supervisor completed without delegating to a specialist.")
@@ -245,17 +280,17 @@ def revise_with_supervisor(
     requests: list[RevisionRequest],
     brief: TripBrief,
     ctx: AgentContext,
-    on_progress: Callable[[str, str, int, str | None], None],
+    forward_progress: Callable[[ProgressEvent], None],
 ) -> list[AgentProposal]:
     """Route validated revision requests through a named supervisor tool loop."""
     model = create_routed_chat_model("supervisor")
     if model is None:
         raise RuntimeError("Revision supervisor requires a configured routed chat model.")
 
-    tools = create_revision_tools(
-        specialists, requests, brief, ctx, lambda p: revised.__setitem__(p.agent, p), on_progress
-    )
     revised: dict[str, AgentProposal] = {}
+    tools = create_revision_tools(
+        specialists, requests, brief, ctx, lambda p: revised.__setitem__(p.agent, p)
+    )
     if not tools:
         return proposals
 
@@ -265,7 +300,8 @@ def revise_with_supervisor(
         system_prompt=REVISION_PROMPT,
         middleware=supervisor_middleware(len(tools)),
     )
-    supervisor.invoke(
+    _forward_custom_events(
+        supervisor,
         {
             "messages": [
                 {
@@ -276,7 +312,8 @@ def revise_with_supervisor(
                     ),
                 }
             ]
-        }
+        },
+        forward_progress,
     )
     if len(revised) != len(tools):
         raise RuntimeError(

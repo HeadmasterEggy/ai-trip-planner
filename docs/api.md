@@ -44,7 +44,6 @@ plan = run_orchestrator(
     OrchestratorOptions(
         specialists=ALL_SPECIALISTS,  # explicit list = deterministic dispatch, no supervisor
         max_rounds=3,
-        on_progress=lambda event: print(event.agent, event.type, event.round),
     ),
 )
 ```
@@ -57,10 +56,40 @@ plan = run_orchestrator(
 | `tools` | A `ToolGateway` of maps and booking ports. Pass fakes to avoid the network. |
 | `mem` | A `MemoryStore`. |
 | `max_rounds` | Negotiation round limit; default 3. |
-| `on_progress` | Called as each specialist starts, completes or fails. |
+| `decisions` | Decisions already made by the traveller, as preference key -> chosen id. |
+
+## `run_orchestrator_stream` — the same plan, with progress
+
+A caller that wants to watch the specialists work iterates the stream instead. The generator body runs
+on the consumer's thread, so nothing has to know which thread a specialist ran on — under the
+supervisor those are LangGraph's tool-pool threads:
+
+```python
+from trip_planner.workflow import OrchestratorOptions, run_orchestrator_stream
+
+stream = run_orchestrator_stream(brief, OrchestratorOptions())
+for event in stream:  # ProgressEvent(type, agent, round, error)
+    print(event.agent, event.type, event.round)
+
+plan = stream.plan  # None until the iterator is exhausted; one pass, one consumer
+```
+
+`ProgressEvent` lives in `trip_planner.contracts` and travels on the graph's custom stream: a node
+writes it with `langgraph.config.get_stream_writer`, and a delegation tool with
+`Runtime.stream_writer`. `run_orchestrator` is the same work with progress discarded, so a caller
+that does not need it pays nothing.
+
+`run_trip_chat_stream` is the chat-level equivalent, and `run_trip_chat` drains it:
+
+```python
+stream = run_trip_chat_stream(request, options)
+for event in stream:
+    ...
+response = stream.response  # set once the iterator is exhausted
+```
 
 The brief is checked before any of that runs. `contracts.brief_problem(brief)` returns a
-traveller-facing reason, or `None`, and `run_orchestrator` raises `ValueError` with it rather than
+traveller-facing reason, or `None`, and both entry points raise `ValueError` with it rather than
 letting a specialist discover the problem four agents deep. The form and chat intake call the same
 function, so all three paths refuse an impossible trip — an end before its start, or more cities in
 the `&`-separated destination than the trip has nights — with one message.

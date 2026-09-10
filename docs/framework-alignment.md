@@ -45,14 +45,15 @@ should stay that way.
 
 ## How it is built today
 
-Four imports carry the whole framework surface:
+The framework surface is five imports:
 
 | Import | Where | Role |
 | --- | --- | --- |
 | `ChatOpenAI` | `models.py:26` | provider + structured output |
 | `create_agent` | `supervisor.py:22` | the one real agent loop |
-| `tool` | `supervisor.py:30` | specialist delegation |
-| `StateGraph`, `START`, `END` | `workflow.py:23` | deterministic orchestration |
+| `tool`, `ToolRuntime` | `supervisor.py:30` | delegation, and the writer a tool narrates through |
+| `get_stream_writer` | `workflow.py:23` | progress from a node |
+| `StateGraph`, `START`, `END` | `workflow.py:24` | deterministic orchestration |
 
 `create_agent` itself returns a `CompiledStateGraph` built from `StateGraph` and `ToolNode`
 (`langchain/agents/factory.py:26,28`), so the supervisor is a nested graph inside the `dispatch`
@@ -64,8 +65,8 @@ structured-output call and two are deterministic calculators, behind a framework
 
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
-| Supervisor | `create_agent` + one tool per worker | `supervisor.py:217` | Conformant |
-| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:451-462` | Conformant, and what the guide recommends |
+| Supervisor | `create_agent` + one tool per worker | `supervisor.py:250` | Conformant |
+| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:462-473` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
 | Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:117`) | Conformant (required for DeepSeek) |
@@ -81,13 +82,13 @@ structured-output call and two are deterministic calculators, behind a framework
 These are load-bearing, and the strategy below must not sand them off:
 
 1. **The supervisor cannot alter trip facts.** `brief`, `ctx`, `mem` and `tools` are captured when the
-   tools are built (`supervisor.py:104-138`), so the deterministic rules downstream validate the
+   tools are built (`supervisor.py:115-155`), so the deterministic rules downstream validate the
    traveller's request rather than a model's paraphrase of it.
 2. **Revision requests are immutable.** One tool per validated `RevisionRequest`
-   (`supervisor.py:148-195`): the supervisor routes a constraint, it cannot rewrite one.
+   (`supervisor.py:166-215`): the supervisor routes a constraint, it cannot rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
-   (`models.py:127`, `workflow.py:321-337`, `workflow.py:382-386`).
+   (`models.py:127`, `workflow.py:327-347`, `workflow.py:393-397`).
 4. **A decision is a preference, not an override.** `apply_decision` writes to long-term memory
    (`decisions.py:49`), which is why a choice survives the next message — something a one-shot
    `interrupt` would not give.
@@ -100,9 +101,10 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
-**Progress.** 1.1, 1.2 and 1.3 have shipped: the routing map names the six roles that call a model,
-the delegation tools take no argument, and the supervisor's loop has retries, error handling and
-declared bounds. 1.4 and the waves after it are open.
+**Progress.** Wave 1 has shipped. 1.1: the routing map names the six roles that call a model.
+1.2: the delegation tools take no argument. 1.3: the supervisor's loop has retries, error handling
+and declared bounds. 1.4: progress is a stream, no module imports Streamlit, and `ui/live.py` is
+gone. Waves 2-4 are open.
 
 ### Wave 1 — Non-structural
 
@@ -176,9 +178,9 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 - Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
 - Transient provider failures: **no retry**. A timeout or 429 dropped straight to the deterministic
   fallback, a silent downgrade of the whole section.
-- Loop bounds: the round limit is ours (`workflow.py:443`), and the only bound on the supervisor's
+- Loop bounds: the round limit is ours (`workflow.py:454`), and the only bound on the supervisor's
   own tool loop was LangGraph's default recursion limit, whose failure surfaced as an exception
-  caught by a broad `except` (`workflow.py:335`).
+  caught by a broad `except` (`workflow.py:347`).
 - Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
 
@@ -227,39 +229,51 @@ surviving batch, the bounded loop, the revision agent carrying the same list, an
 **Done when.** No transient provider error reaches the user as a silently downgraded section, and the
 supervisor's loop bounds are declared rather than inherited. *Shipped.*
 
-#### 1.4 Replace the custom progress callback with official streaming (M)
+#### 1.4 Replace the custom progress callback with official streaming (M) — shipped
 
-**Problem.** Progress travels through `OrchestratorOptions.on_progress`, a hand-rolled callback that
-the specialists call from whatever thread they happen to run on (`workflow.py:308-316`,
-`supervisor.py:132,178`). That design is what produced the worker-thread bug: the callback wrote
-Streamlit widgets with no `ScriptRunContext`, raised inside the tool, and took the whole delegation
-with it. The shipped fix (`ui/live.py`) binds the run context correctly and is tested, but the
-fragility is structural: any consumer of `on_progress` must know which thread it is called on.
+**Problem.** Progress travelled through `OrchestratorOptions.on_progress`, a hand-rolled callback the
+specialists called from whatever thread they happened to run on. That design produced the
+worker-thread bug: the callback wrote Streamlit widgets with no `ScriptRunContext`, raised inside the
+tool, and took the whole delegation with it. The first fix (`ui/live.py`) bound the run context
+correctly and was tested, but the fragility was structural: every consumer of `on_progress` had to
+know which thread it was called on.
 
 **Official mechanism.** LangGraph streams execution: `stream`/`astream` with `stream_mode`, and
-`stream_events`/`astream_events`, both present on the compiled graph in this version. A tool can also
-push structured events with `runtime.stream_writer` (`ToolRuntime.stream_writer`), which is the
-supported way for a worker to narrate what it is doing.
+`stream_events`/`astream_events`. A node writes custom events with
+`langgraph.config.get_stream_writer`; a tool writes them with `ToolRuntime.stream_writer`, which is
+the documented way for a worker to narrate what it is doing.
 
-**Target.** Keep the public shape (`ProgressEvent`) and change the producer: expose
-`run_orchestrator_events(brief, options) -> Iterator[ProgressEvent]` that drives
-`graph.stream(..., stream_mode=["updates", "custom"])` and translates node/tool events into the
-existing `ProgressEvent` type. The UI consumes the iterator on the script thread; `ui/live.py` and
-`on_progress` then have no reason to exist for the supervisor path.
+**Shipped, and simpler than the plan.** No translation layer was needed: the events *are* the
+`ProgressEvent` payloads, published where the work happens. `ProgressEvent` moved to `contracts.py`
+so a tool can build one without importing the graph.
 
-**Risks.** The translation layer is new surface: map each specialist to its tool name
-(`ask_<agent>_specialist`/`revise_<agent>_specialist`), preserve the round suffix the UI shows, and
-keep `tests/test_planner.py::test_the_graph_runs_every_specialist_and_emits_progress` passing. The
-deterministic path emits no tool events, so it needs an explicit shim (run the node and yield
-synthetic events) or `stream_mode="updates"` on the outer graph, which reports node completion.
+- `workflow.write_progress` publishes from the node's own thread (the deterministic path).
+- The delegation tools publish with `runtime.stream_writer`, and `supervisor._forward_custom_events`
+  pumps the nested agent's custom stream into the outer one — a nested agent is not part of the outer
+  graph's stream, so that hop has to be explicit, and doing it in the node is what keeps the write off
+  the tool pool.
+- `run_orchestrator_stream` returns a `PlanStream`: iterate it for events, read `.plan` after. One pass
+  produces both, so the plan cannot be a generator return value. `run_orchestrator` is unchanged for
+  callers that do not need progress — a non-streamed run makes the writer a no-op.
+- `run_trip_chat_stream` is the chat-level equivalent; `run_trip_chat` drains it.
+- `ui/live.py` and its test are deleted, and `tests/test_supervisor_streaming.py` asserts the
+  replacement invariant: nothing under `trip_planner/` imports Streamlit.
 
-**Order.** Do (1.3) first: with `ToolErrorMiddleware` in place, a translation bug degrades progress
-rather than the plan.
+**Verified before building on it.** `runtime.stream_writer` does *not* raise from a tool worker
+thread (it silently drops when the nested run is not streamed), and a writer captured from the graph
+*does* raise — `Called get_config outside of a runnable context` — because it resolves its config from
+a context variable that does not cross threads. That is why the tools use the runtime's writer and the
+forwarding happens in the node.
 
-**Tests.** A test that the iterator yields exactly one `agent_started`/`agent_completed` pair per
-specialist per round, on both paths, with no thread-context requirement.
+**Risks, realised and handled.** The retry added in 1.3 turned out to retry a specialist's
+`ValueError` too, so a deterministic failure ("no eligible stay") cost a second attempt — under the
+supervisor, model calls. `ToolRetryMiddleware` is now configured with `retry_on` that excludes
+`ValueError`, and a test pins one attempt. The signature change also broke the two tests that invoked
+a delegation tool directly (`runtime` is injectable only inside a graph); that coverage moved to the
+real `dispatch_with_supervisor` path, which is stronger than what it replaced.
 
-**Done when.** No code outside the LangGraph run touches a worker thread, and `ui/live.py` is deleted.
+**Done when.** No code outside the LangGraph run touches a worker thread, and `ui/live.py` is
+deleted. *Shipped.*
 
 ### Wave 2 — Injection and result flow
 
@@ -268,8 +282,8 @@ Medium risk: touches how dependencies and results move, but not what the graph d
 #### 2.1 Build the supervisor once, inject through `ToolRuntime` (M)
 
 **Problem.** `create_agent` is called on every dispatch and every revision round
-(`supervisor.py:157,197`), and the outer graph is compiled on every request
-(`workflow.py:471`). Both exist only because the tools are closures over per-run state. Compiling a
+(`supervisor.py:250,297`), and the outer graph is compiled on every request
+(`workflow.py:491`). Both exist only because the tools are closures over per-run state. Compiling a
 graph is not free, and the pattern inverts the documented one, where the agent is built once and
 reads what it needs from the runtime.
 
@@ -324,9 +338,9 @@ rebuilt on every revision round.
 
 #### 2.2 Put worker results in graph state instead of a side channel (M/L)
 
-**Problem.** `shared_extras` (`workflow.py:301`) is a mutable dict captured by the closures. Traces
+**Problem.** `shared_extras` (`workflow.py:307`) is a mutable dict captured by the closures. Traces
 and stay choices are written into it by specialists (`specialists/base.py:86`,
-`specialists/accommodation.py:225`) and read out in `build_plan` (`workflow.py:436-439`). The
+`specialists/accommodation.py:225`) and read out in `build_plan` (`workflow.py:447-450`). The
 official docs call out the consequence of results living outside the graph
 ([Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents)):
 
@@ -369,9 +383,9 @@ Two details that will otherwise cost an afternoon:
   `tool_call_id`, or the agent's message history is left inconsistent.
 
 **Reducer requirement.** The outer `State` is a plain `TypedDict` with overwrite semantics
-(`workflow.py:87-94`). Parallel tool calls appending to the same key need a reducer
+(`workflow.py:88-95`). Parallel tool calls appending to the same key need a reducer
 (`Annotated[list[...], operator.add]`), and the existing "restore registration order" step
-(`supervisor.py:239`) must stay — with concurrent appends the arrival order is not stable, and
+(`supervisor.py:274`) must stay — with concurrent appends the arrival order is not stable, and
 section order in the plan must not become nondeterministic.
 
 **Risks.** Thread-safety of the reducer under parallel tools (LangGraph handles this, but the tests
@@ -387,7 +401,7 @@ version; the section order matches `ALL_SPECIALISTS` under a run that delegates 
 
 #### 2.3 Compile the outer graph once (S)
 
-**Problem.** `run_orchestrator` compiles per request (`workflow.py:471`). That is a consequence of
+**Problem.** `run_orchestrator` compiles per request (`workflow.py:491`). That is a consequence of
 per-run options (injected specialists, decisions, callbacks).
 
 **Target.** Split per-run inputs from construction: compile with a static config (checkpointer,
@@ -407,7 +421,7 @@ that lives in closures cannot be checkpointed.
 
 #### 3.1 Checkpoint the outermost graph (M)
 
-**Problem.** `graph.compile()` has no checkpointer (`workflow.py:462`), so there is no persistence,
+**Problem.** `graph.compile()` has no checkpointer (`workflow.py:473`), so there is no persistence,
 no resume after a crash, no `get_state`, and no way to pause.
 
 **Official mechanism.** Compile the **outermost** graph with a checkpointer and invoke with a
@@ -435,7 +449,7 @@ does add a second place to bound.
 
 **Problem.** A traveller's decision is applied by re-running the whole graph
 (`decisions.py:49-56`): five specialists, up to three rounds, to change one stay. And an unresolved
-escalation is only *reported* (`workflow.py:258-267`) — nothing pauses.
+escalation is only *reported* (`workflow.py:259-268`) — nothing pauses.
 
 **Official mechanism.** `interrupt()` inside a node, resumed with `Command(resume=...)`. It
 propagates up from nested `create_agent` layers to the outermost graph.
@@ -448,7 +462,7 @@ propagates up from nested `create_agent` layers to the outermost graph.
   human's change costs one specialist, not five.
 - **3b.** Interrupt on `confirm_choice` (stay choices) as well. This **changes the product
   contract**: `_choice_checkpoints` is explicitly non-blocking today ("a traveller who ignores them
-  still gets a complete plan", `workflow.py:198-204`). Making it a pause is a defensible product
+  still gets a complete plan", `workflow.py:199-206`). Making it a pause is a defensible product
   decision, but it is a decision, not a refactor — and it should be argued in `docs/streamlit-ui.md`,
   not smuggled in with a state-model change.
 
@@ -498,7 +512,7 @@ can carry.
 
 #### 4.3 Parallelise the deterministic dispatch (S)
 
-`deterministic_dispatch` is a sequential comprehension (`workflow.py:318`), so with no model the
+`deterministic_dispatch` is a sequential comprehension (`workflow.py:324`), so with no model the
 five independent specialists run one after another. They are pure over `(brief, ctx)`, and after
 `db59f0e` the progress sink is thread-safe, so a bounded `ThreadPoolExecutor` is now safe. Watch the
 shared `ctx.extras` writes (`specialists/base.py:86`, `specialists/accommodation.py:225`): appends
@@ -508,7 +522,7 @@ not from the graph.
 
 ## What not to change
 
-- **The deterministic conflict and budget rules** (`workflow.py:103`). They are the reason the
+- **The deterministic conflict and budget rules** (`workflow.py:104`). They are the reason the
   negotiation converges; the docs' own performance tables show the model-driven patterns costing more
   calls for less control.
 - **The fallback chain.** No official middleware replaces "degrade to validated deterministic output

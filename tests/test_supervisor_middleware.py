@@ -22,10 +22,8 @@ from langchain.agents.middleware import (
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
+from scripted import ScriptedChatModel, tool_call
 
 from trip_planner import supervisor as supervisor_module
 from trip_planner.contracts import AgentProposal, RevisionRequest
@@ -42,41 +40,6 @@ from trip_planner.supervisor import (
 )
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
-
-
-class ScriptedChatModel(BaseChatModel):
-    """Answers from a script: an `AIMessage`, or an exception to raise.
-
-    The last entry repeats, so a script can say "keep delegating forever".
-    """
-
-    responses: list
-    index: int = 0
-    seen: list = Field(default_factory=list)
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted"
-
-    def bind_tools(self, tools, **kwargs):
-        # `create_agent` binds the tools before calling; a scripted model does
-        # not need them.
-        return self
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        self.seen.append(list(messages))
-        item = self.responses[min(self.index, len(self.responses) - 1)]
-        self.index += 1
-        if isinstance(item, Exception):
-            raise item
-        return ChatResult(generations=[ChatGeneration(message=item)])
-
-
-def call(name: str, call_id: str = "c1") -> AIMessage:
-    return AIMessage(
-        content="",
-        tool_calls=[{"name": name, "args": {}, "id": call_id, "type": "tool_call"}],
-    )
 
 
 @pytest.fixture
@@ -109,7 +72,7 @@ def test_a_transient_model_failure_is_retried_rather_than_fallen_back(scripted, 
     model = scripted(
         [
             ConnectionError("provider hiccup"),
-            call("ask_itinerary_specialist"),
+            tool_call("ask_itinerary_specialist"),
             AIMessage(content="All done."),
         ]
     )
@@ -164,7 +127,7 @@ def test_a_failing_specialist_does_not_take_the_others_with_it(scripted, ctx):
 def test_the_supervisor_loop_is_bounded(scripted, ctx):
     """A model that never stops delegating stops anyway, well below the
     recursion limit that used to be the only bound."""
-    model = scripted([call("ask_itinerary_specialist")])
+    model = scripted([tool_call("ask_itinerary_specialist")])
 
     proposals = dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, progress)
 
@@ -182,6 +145,31 @@ def test_the_revision_loop_carries_the_same_middleware(scripted, ctx):
     with pytest.raises(RuntimeError, match="delegated 0 of 1"):
         revise_with_supervisor(ALL_SPECIALISTS, [], [request], DEMO_BRIEF, ctx, progress)
     assert model.index == 1
+
+
+def test_a_deterministic_specialist_failure_is_not_retried(scripted, ctx):
+    """A ValueError is an answer, not a hiccup.
+
+    Retrying "no eligible stay" under the supervisor would spend model calls to
+    get the same failure back, so the tool retry is restricted to failures that
+    might not repeat.
+    """
+    attempts = []
+
+    def boom(brief, context, revision=None) -> AgentProposal:
+        attempts.append(1)
+        raise ValueError("no eligible stay")
+
+    specialists = [
+        FunctionSpecialist("accommodation", "Stay", boom) if s.name == "accommodation" else s
+        for s in ALL_SPECIALISTS
+    ]
+    scripted([tool_call("ask_accommodation_specialist"), AIMessage(content="Noted.")])
+
+    with pytest.raises(RuntimeError, match="without delegating"):
+        dispatch_with_supervisor(specialists, DEMO_BRIEF, ctx, lambda event: None)
+
+    assert len(attempts) == 1
 
 
 def test_the_error_handler_is_outside_the_retry():

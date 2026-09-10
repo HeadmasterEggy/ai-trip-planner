@@ -19,9 +19,9 @@ from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
 from trip_planner.workflow import (
     OrchestratorOptions,
-    ProgressEvent,
     detect_conflicts,
     run_orchestrator,
+    run_orchestrator_stream,
 )
 
 
@@ -80,12 +80,14 @@ def test_multi_city_stay_splits_into_contiguous_segments(brief):
 def test_an_unplannable_brief_is_refused_before_any_specialist_runs(brief):
     """The orchestrator checks feasibility up front, so a caller gets one
     reason rather than a failure four agents deep."""
-    events: list[ProgressEvent] = []
     one_night = brief.model_copy(update={"dates": ("2026-06-15", "2026-06-16")})
 
     with pytest.raises(ValueError, match="at least 2 nights"):
-        run_orchestrator(one_night, OrchestratorOptions(on_progress=events.append))
-    assert events == []
+        run_orchestrator(one_night)
+    # The streaming entry point refuses before it even builds a graph, so a caller
+    # that was going to watch the run gets the same single reason.
+    with pytest.raises(ValueError, match="at least 2 nights"):
+        run_orchestrator_stream(one_night)
 
 
 def test_brief_problem_reports_rather_than_raises(brief):
@@ -187,8 +189,11 @@ def test_an_over_budget_plan_asks_only_the_costly_specialists(brief):
 
 
 def test_the_graph_runs_every_specialist_and_emits_progress(brief):
-    events: list[ProgressEvent] = []
-    plan = run_orchestrator(brief, OrchestratorOptions(on_progress=events.append))
+    stream = run_orchestrator_stream(brief, OrchestratorOptions())
+    events = list(stream)
+    plan = stream.plan
+
+    assert plan is not None  # reading the plan is what the drain is for
     assert {s.id for s in plan.sections} == {s.name for s in ALL_SPECIALISTS}
     assert plan.round >= 1
     assert any(e.type == "agent_started" for e in events)
