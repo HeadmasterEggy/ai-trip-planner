@@ -30,6 +30,7 @@ from trip_planner.decisions import apply_decision
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
+from trip_planner.ui.live import bind_to_script_run
 from trip_planner.ui.render import (
     agent_row,
     budget_block,
@@ -361,12 +362,19 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
 
         # The stream is consumed inside this single script run, so each event
         # repaints its own row instead of leaving one opaque spinner.
-        def on_progress(event: ProgressEvent) -> None:
+        def render_event(event: ProgressEvent) -> None:
             state[event.agent] = event.type
             slots[event.agent].markdown(
                 agent_row(LABELS[event.agent], event.type, event.round, event.error),
                 unsafe_allow_html=True,
             )
+
+        # The supervisor delegates through LangGraph tools, and ToolNode runs a
+        # batch of tool calls on a thread pool. A worker thread has no script run
+        # context, so an unbound callback raises NoSessionContext inside the tool
+        # -- before the specialist has done anything -- and the whole delegation
+        # falls back. See `ui.live`.
+        on_progress = bind_to_script_run(render_event)
 
         try:
             with st.spinner("The team is planning…"):
