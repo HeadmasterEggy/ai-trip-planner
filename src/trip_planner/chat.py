@@ -319,6 +319,16 @@ class ChatStream:
     so a consumer that stops early never records a turn it did not finish.
     """
 
+    @property
+    def interrupt(self) -> dict[str, Any] | None:
+        """Set when the run paused for a human; the plan is already built."""
+        return self._plan_stream.interrupt
+
+    @property
+    def thread_id(self) -> str:
+        """The paused run's thread, needed to resume it."""
+        return self._plan_stream.thread_id
+
     def __init__(
         self,
         plan_stream: PlanStream,
@@ -371,6 +381,8 @@ def run_trip_chat_stream(
     *,
     extractor: BriefExtractor | None = None,
     reply_generator: Callable[[str], str] | None = None,
+    resume: Any = None,
+    thread_id: str | None = None,
 ) -> ChatStream:
     """Apply a message to the brief, re-plan, and answer -- reporting progress."""
     options = options or OrchestratorOptions()
@@ -385,7 +397,7 @@ def run_trip_chat_stream(
 
     options.mem = mem
     return ChatStream(
-        plan_stream=run_orchestrator_stream(brief, options),
+        plan_stream=run_orchestrator_stream(brief, options, resume=resume, thread_id=thread_id),
         message=request.message,
         before=current,
         after=brief,

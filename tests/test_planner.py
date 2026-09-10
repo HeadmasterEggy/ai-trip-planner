@@ -285,6 +285,8 @@ def test_worker_results_live_in_graph_state(brief, monkeypatch):
         context=workflow_module._run_context(
             OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1)
         ),
+        # The graph is checkpointed now, so a run needs a thread to write to.
+        config=workflow_module._thread_config("state-channel-test"),
         stream_mode="values",
     ):
         final = payload
@@ -362,3 +364,81 @@ def test_progress_is_always_written_on_the_node_thread(brief, monkeypatch):
 
     assert threads, "the run should report something"
     assert set(threads) == {"MainThread"}
+
+
+def _tight(brief):
+    """A brief whose plan must escalate: far over the 10% red line."""
+    return brief.model_copy(update={"budgetTotal": 1500})
+
+
+def test_a_finished_run_leaves_no_checkpoint(brief):
+    """The saver is in-process, so a run that needed no answer drops its thread."""
+    monkeypatch_free = brief.model_copy(update={"budgetTotal": 100_000})
+    stream = run_orchestrator_stream(monkeypatch_free, OrchestratorOptions(max_rounds=1))
+    list(stream)
+
+    assert stream.interrupt is None
+    assert (
+        workflow_module._GRAPH.get_state(workflow_module._thread_config(stream.thread_id)).values
+        == {}
+    )
+
+
+def test_an_escalation_pauses_with_the_plan_already_built(brief):
+    """The pause comes after `build_plan`, so the traveller answers with the plan in
+    front of them -- and the thread survives so the answer can resume it."""
+    stream = run_orchestrator_stream(_tight(brief), OrchestratorOptions(max_rounds=1))
+    list(stream)
+
+    assert stream.plan is not None  # the plan the traveller is deciding about
+    assert stream.interrupt is not None
+    assert stream.interrupt["kind"] == "escalation"
+    assert [option["value"] for option in stream.interrupt["options"]] == ["accept"]
+    # No rounds left, so "revise" is not offered: the only honest answer is to keep it.
+    state = workflow_module._GRAPH.get_state(workflow_module._thread_config(stream.thread_id))
+    assert state.values["plan"].tripId == brief.tripId
+
+
+def test_resuming_with_accept_marks_the_escalation_answered(brief):
+    stream = run_orchestrator_stream(_tight(brief), OrchestratorOptions(max_rounds=1))
+    list(stream)
+    assert stream.interrupt is not None
+
+    resumed = run_orchestrator_stream(
+        _tight(brief),
+        OrchestratorOptions(max_rounds=1),
+        resume="accept",
+        thread_id=stream.thread_id,
+    )
+    list(resumed)
+
+    assert resumed.interrupt is None
+    escalation = next(h for h in resumed.plan.hitl if h.type == "escalation")
+    assert escalation.status == "approved"
+    assert resumed.plan.overrunPct > 10  # still over: the bar shows it, the stop asking
+
+
+def test_the_pause_never_offers_a_revision_that_cannot_help(brief):
+    """Why the answer set is just "keep it".
+
+    The pause is reached only when another round is impossible or known to be
+    futile: `route_after_detection` sends the run back to `revise_conflicts`
+    whenever conflicts remain and there is room, and stops when there is no room,
+    nothing conflicted, or the last revision moved no money. So a "revise" button
+    here would do nothing -- which is a finding, not an omission.
+    """
+    options = OrchestratorOptions(max_rounds=3)
+    stream = run_orchestrator_stream(_tight(brief), options)
+    list(stream)
+
+    assert stream.interrupt is not None
+    assert [option["value"] for option in stream.interrupt["options"]] == ["accept"]
+
+    plan = stream.plan
+    assert plan is not None
+    negotiated = len(plan.negotiation) >= 2  # it did use the rounds it had
+    assert negotiated
+    no_room = plan.round >= plan.negotiation[0].round + options.max_rounds - 1
+    stalled = any(entry.stalled for entry in plan.negotiation)
+    unresolved = bool(plan.negotiation[-1].conflicts)
+    assert stalled or not unresolved or no_room

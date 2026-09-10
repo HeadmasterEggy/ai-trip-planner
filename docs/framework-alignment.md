@@ -52,8 +52,8 @@ The framework surface is five imports:
 | `ChatOpenAI` | `models.py:26` | provider + structured output |
 | `create_agent` | `supervisor.py:25` | the one real agent loop |
 | `tool`, `ToolRuntime` | `supervisor.py:33` | delegation, and the writer a tool narrates through |
-| `get_stream_writer` | `workflow.py:25` | progress from a node |
-| `StateGraph`, `START`, `END` | `workflow.py:26` | deterministic orchestration |
+| `get_stream_writer` | `workflow.py:28` | progress from a node |
+| `StateGraph`, `START`, `END` | `workflow.py:29` | deterministic orchestration |
 
 `create_agent` itself returns a `CompiledStateGraph` built from `StateGraph` and `ToolNode`
 (`langchain/agents/factory.py:26,28`), so the supervisor is a nested graph inside the `dispatch`
@@ -66,7 +66,7 @@ structured-output call and two are deterministic calculators, behind a framework
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
 | Supervisor | `create_agent` + one tool per worker | `supervisor.py:323` (built once, `ASK_TOOLS`) | Conformant |
-| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:586-597` | Conformant, and what the guide recommends |
+| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:717-732` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
 | Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:117`) | Conformant (required for DeepSeek) |
@@ -74,7 +74,7 @@ structured-output call and two are deterministic calculators, behind a framework
 | **Delegation input** | the supervisor decides **what** each worker is told | no input at all, and deliberately so: the worker derives its prompt from the brief | **Deliberate** |
 | Worker results | `Command`/`InjectedToolCallId` back into graph state | `SupervisorState` channels with reducers, read out by the node | Conformant |
 | Dependency injection | `context_schema` + `ToolRuntime`, agent built once | `DelegationContext` via `runtime.context`, cached agent | Conformant |
-| **Human in the loop** | `checkpointer` + `interrupt()` + `Command(resume=...)` | plan records + full re-run | **Gap** |
+| Human in the loop | `checkpointer` + `interrupt()` + `Command(resume=...)` | checkpointed graph, `interrupt` where the plan escalates, resume carries the call | Conformant, for the decision that blocks |
 | Resilience | `ModelRetry` / `ToolRetry` / `ToolError` / `ModelFallback` / call limits | `ModelRetry`, `ToolRetry`, `ToolError` and both call limits in `supervisor_middleware`; no provider fallback yet | **Conformant**, fallback deferred |
 
 ## What is deliberately different
@@ -92,7 +92,7 @@ These are load-bearing, and the strategy below must not sand them off:
    can neither supply nor rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
-   (`models.py:127`, `workflow.py:417-459`, `workflow.py:510-514`).
+   (`models.py:127`, `workflow.py:495-537`, `workflow.py:588-592`).
 4. **A decision is a preference, not an override.** `apply_decision` writes to long-term memory
    (`decisions.py:49`), which is why a choice survives the next message — something a one-shot
    `interrupt` would not give.
@@ -105,9 +105,11 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
-**Progress.** Waves 1, 2 and 4 have shipped. 4.1 made the README stop overclaiming and recorded
-which parts deliberate; 4.3 overlapped the no-key path. Open: Wave 3 (persistence and human in
-the loop), the only wave that changes product behaviour.
+**Progress.** Every wave has shipped. 1: role-based routing, no delegation argument, official
+resilience middleware, progress as a stream. 2: agent and graph built once with per-run state
+injected, worker results in graph state. 3: a checkpointed graph that pauses where the plan
+escalates, with the traveller's answer resuming it. 4: honest naming, overlapped no-key path.
+Open by decision: 3b (blocking stay choices), a provider fallback model, and richer trip edits.
 
 ### Wave 1 — Non-structural
 
@@ -181,9 +183,9 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 - Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
 - Transient provider failures: **no retry**. A timeout or 429 dropped straight to the deterministic
   fallback, a silent downgrade of the whole section.
-- Loop bounds: the round limit is ours (`workflow.py:578`), and the only bound on the supervisor's
+- Loop bounds: the round limit is ours (`workflow.py:709`), and the only bound on the supervisor's
   own tool loop was LangGraph's default recursion limit, whose failure surfaced as an exception
-  caught by a broad `except` (`workflow.py:459`).
+  caught by a broad `except` (`workflow.py:537`).
 - Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
 
@@ -379,10 +381,10 @@ every node closed over its own options.
 declares `runtime: Runtime[TripRun]` and reads `runtime.context`, and both `invoke` and `stream`
 accept `context=`.
 
-**Shipped.** `TripRun` (`workflow.py:274-289`) holds everything a run needs — specialists, the name
+**Shipped.** `TripRun` (`workflow.py:291-306`) holds everything a run needs — specialists, the name
 index, ports, memory, the round limit, the decisions, and the per-run `extras` scratch. Every node
 that needs it takes `runtime: Runtime[TripRun]`, and `_GRAPH` is compiled once at import
-(`workflow.py:602`). `create_orchestrator_graph()` no longer takes options at all.
+(`workflow.py:737`). `create_orchestrator_graph()` no longer takes options at all.
 
 Two consequences worth recording:
 
@@ -403,133 +405,86 @@ do not call it) and the isolation test above.
 
 **Done when.** The default path compiles once per process. *Shipped.*
 
-### Wave 3 — Persistence and human in the loop
+### Wave 3 — Persistence and human in the loop — shipped
 
-The real capability gap, and the only wave that changes product behaviour. Do it after Wave 2: state
-that lives in closures cannot be checkpointed.
+The only wave that changes product behaviour. It was left for last on purpose, and doing it
+corrected one of its own assumptions.
 
-#### 3.1 Checkpoint the outermost graph (M)
+#### 3.1 Checkpoint the outermost graph — shipped
 
-**Problem.** `graph.compile()` has no checkpointer (`workflow.py:597`), so there is no persistence,
-no resume after a crash, no `get_state`, and no way to pause.
+**Problem.** The graph had no checkpointer, so nothing could pause, nothing survived between calls
+and `get_state` had nothing to read.
 
-**Official mechanism.** Compile the **outermost** graph with a checkpointer and invoke with a
-`thread_id`; leave nested agents without one so they inherit the parent's
-([Migrate from langgraph-supervisor](https://docs.langchain.com/oss/python/migrate/langgraph-supervisor),
-"Requirements for interrupt propagation"). The invoke signature already accepts
-`context`, `durability` and `stream_mode` in this version.
+**Official mechanism.** Compile the outermost graph with a checkpointer and pass a `thread_id` on
+every call; nested agents stay without one so they inherit the parent's.
 
-**Target.** `graph.compile(checkpointer=InMemorySaver())`, invoked with
-`config={"configurable": {"thread_id": brief.tripId}}`. `InMemorySaver` matches the current
-in-process memory seam; a durable saver is a later, separate decision. Emit `durability="sync"` while
-the resume path is being built, so a crash cannot lose the pause.
+**Shipped, with the bound the plan asked for.** `_CHECKPOINTER` is an `InMemorySaver`, and its
+serializer lists the contract types explicitly (`JsonPlusSerializer(allowed_msgpack_modules=[...])`)
+rather than relying on the permissive default: langgraph warns on every unregistered type it
+deserializes and will block them in a future release, and the list doubles as the honest record of
+what crosses a checkpoint boundary.
 
-**Risks.** Checkpointer + parallel tool calls means concurrent writes to the same thread; LangGraph
-handles it, but a plan that half-writes is now possible and needs a test. Memory grows per thread —
-the existing `InMemoryStore` has the same unbounded property, so this does not make that worse but
-does add a second place to bound.
+Two decisions came out of running it:
 
-**Tests.** Two runs with the same `thread_id` see the same checkpointed state; a run with a fresh
-`thread_id` does not; state survives an exception between nodes.
+- **A fresh thread per run** (`{tripId}-{uuid}`). The state channels use reducers, so reusing one
+  thread id across turns would carry the previous run's `traces` and `stay_choices` into the next
+  one — ten traces for a five-specialist trip.
+- **A run that did not pause drops its thread.** The saver is in-process, so keeping every finished
+  trip would grow without bound; nothing needs resuming once a plan is returned. A paused run keeps
+  its thread until the traveller answers. This is why the item's original "done when" is restated
+  below: a *finished* run is deliberately not readable afterwards.
 
-**Done when.** `get_state(config)` returns the proposals and traces for a finished trip.
+**Done when.** `get_state(config)` shows the plan, proposals and traces for a **paused** trip, and the
+saver stays bounded because a run that did not pause deletes its thread. *Shipped.*
 
-#### 3.2 Interrupt where a human is already required, first (M)
+#### 3.2 Interrupt where a human is already required, first — shipped, and corrected
 
-**Problem.** A traveller's decision is applied by re-running the whole graph
-(`decisions.py:49-56`): five specialists, up to three rounds, to change one stay. And an unresolved
-escalation is only *reported* (`workflow.py:260-269`) — nothing pauses.
+**Problem.** A traveller's decision was only ever *reported*: the plan showed a pending escalation and
+the warning repeated on every subsequent turn, because nothing could pause and nothing could answer.
 
-**Official mechanism.** `interrupt()` inside a node, resumed with `Command(resume=...)`. It
-propagates up from nested `create_agent` layers to the outermost graph.
+**Official mechanism.** `interrupt()` inside a node, resumed with `Command(resume=...)`.
 
-**Two options, and they are not equally good.**
+**Shipped.** A new `await_decision` node sits after `build_plan`, so the pause happens with the plan
+already built and rendered — the traveller decides looking at the plan, not blind. Accepting marks the
+escalation answered inside that node rather than rebuilding, so the plan they were reading is the plan
+that becomes final. The node is idempotent (an `interrupt` re-executes its node from the top) and the
+pause happens at most once per run.
 
-- **3a (recommended).** Interrupt only where the plan already says a human must decide: the
-  `escalation` checkpoint. Blocking is correct there — the plan is over the red line or did not
-  converge. On resume, route straight to a targeted revision round instead of re-dispatching, so the
-  human's change costs one specialist, not five.
-- **3b.** Interrupt on `confirm_choice` (stay choices) as well. This **changes the product
-  contract**: `_choice_checkpoints` is explicitly non-blocking today ("a traveller who ignores them
-  still gets a complete plan", `workflow.py:200-207`). Making it a pause is a defensible product
-  decision, but it is a decision, not a refactor — and it should be argued in `docs/streamlit-ui.md`,
-  not smuggled in with a state-model change.
+The UI answers it: the paused run's thread id and the offered options go into session state, the
+escalation renders with a button, and the button resumes that thread. A test drives the whole loop
+through `AppTest` — pause, click, resume, escalation approved.
 
-**Implementation notes.** `interrupt()` re-executes its node from the top on resume, so put it in a
-dedicated node whose first statement is the interrupt, and keep the expensive work either before or
-after that node, never straddling it. The resume value must be validated like any other input
-(`decisions.py:41-44` already refuses an option the checkpoint never offered — keep that).
+**The correction.** The plan claimed the resume would "route straight to a targeted revision round
+... so the human's change costs one specialist, not five". Implementing it showed that is not
+reachable, and pinning it with a test made the reason precise: `route_after_detection` already sends
+the run back to `revise_conflicts` whenever conflicts remain and a round is left, so the pause is
+only ever reached when another round is *impossible* (round limit spent), *futile* (the last revision
+moved no money, i.e. stalled), or *unnecessary* (no conflicts remain). A "revise" button at that point
+would do nothing, so the honest answer set is "keep this plan, and know why it is over" — the overrun
+stays on the budget bar, and the escalation stops asking.
 
-**Tests.** An escalating plan pauses with `__interrupt__` and does not re-dispatch on resume; a
-resumed escalation runs exactly one specialist; a plan with no escalation never interrupts; the
-non-blocking stay-choice path is unchanged until 3b is decided.
+Offering a real second option would mean pausing *before* the negotiation spends its last round, which
+changes the negotiation's behaviour rather than the HITL plumbing. That is a product question, and it
+belongs in `docs/streamlit-ui.md`, not smuggled in here. `test_the_pause_never_offers_a_revision_that_cannot_help`
+pins the invariant and the reasoning.
 
-**Done when.** 3a is merged with the "one specialist, not five" property pinned by a test.
+**3b is still open by decision.** Stay choices remain non-blocking preferences: a traveller who ignores
+them still gets a complete plan, which is the behaviour the UI was built around (`_choice_checkpoints`,
+`workflow.py`).
 
-#### 3.3 Keep preference promotion on top of the interrupt (S)
+#### 3.3 Keep preference promotion on top of the interrupt — shipped, and it is a no-op
 
-`interrupt` and this project's memory seam are complementary, not alternatives: the interrupt pauses
-the run, `set_long_term` makes the answer persist into the next conversation. Whichever of 3a/3b is
-chosen, `apply_decision` should keep writing the preference — and where both exist, one code path
-must own the write, or a choice will be recorded twice with two different sources.
+The escalation answer is not a preference: it is an acknowledgement, so nothing about it belongs in
+long-term memory. That leaves `decisions.apply_decision` as the single writer of preferences, which is
+exactly what this item asked for. A stay choice reached through the UI still writes one, and a resume
+never writes a second copy.
 
-**Done when.** One function records a decision, whether it arrived through the UI form or a resume.
-
-### Wave 4 — Naming, consolidation, and latency
-
-Optional, and worth doing only after Waves 1-3 settle.
-
-#### 4.1 Say "agent" only where a model decides (S) — shipped, in the docs
-
-**Problem.** Three specialists are single structured calls and two are calculators, so "five specialist
-agents" overclaims. The README also claimed the five "research it in parallel", which was only true on
-the supervisor path — item 4.3 fixed that half.
-
-**Decision.** The code keeps the name `Specialist`, and the distinction is stated once, in
-`docs/agent-architecture.md`: the table there names the one agent (the supervisor), the three
-generations, the two calculators and the deterministic reconciler between them. Renaming the protocol
-to `Worker` would touch every specialist, every test and every doc for no functional gain, and
-`Specialist` is the contract the orchestrator actually sees. The README now says what holds them
-together is deterministic rather than negotiated.
-
-**Done when.** A reader can tell which parts deliberate and which compute. *Shipped.*
-
-#### 4.2 Do not adopt `SubAgentMiddleware`/Deep Agents yet (no work)
-
-`deepagents` offers `SubAgentMiddleware` and a `task` tool off the shelf
-([Prebuilt middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in#subagent)).
-It would replace ~150 lines of `supervisor.py`, at the cost of the two invariants that make this
-project's output checkable: the supervisor would decide **what** each subagent is told (1.2), and
-results would flow through the framework's own convention rather than through validation the
-deterministic layer controls. Revisit only if the worker count grows past what hand-written tools
-can carry.
-
-#### 4.3 Parallelise the deterministic dispatch (S) — shipped
-
-**Problem.** `deterministic_dispatch` was a sequential comprehension, so with no model -- the path
-every deployment without a key runs -- five independent specialists ran one after another. That is
-also the path whose latency *is* the plan's latency.
-
-**Shipped.** A bounded `ThreadPoolExecutor` over the specialists, one thread each. Two things made it
-safe that were not true a wave ago: the specialists report through per-invocation `extras` collected
-into state (2.2), so nothing depends on completion order; and the *reporting* stayed on the node's
-thread. That last one is a real constraint, not tidiness: a stream writer captured from the graph
-resolves its config from a context variable that does not cross threads and raises
-`Called get_config outside of a runnable context` (the finding recorded in 1.4). So the node writes
-`agent_started` for every specialist up front and each `agent_completed` as that future resolves,
-which also keeps the UI's rows updating while the others run.
-
-**Tests.** `test_the_deterministic_dispatch_runs_specialists_concurrently` uses a `barrier` rather than
-a stopwatch: it can only be passed if every specialist is inside its work at once, so it fails loudly
-rather than flakily. `test_progress_is_always_written_on_the_node_thread` pins the constraint that
-shaped the design.
-
-**Done when.** The no-key path overlaps its specialists, and the README's "in parallel" is true of both
-paths. *Shipped.*
+**Done when.** One function records a decision. *Shipped: no change was needed, and the test that
+would have caught a second writer (`test_a_confirmed_choice_outranks_a_budget_revision`) still passes.*
 
 ## What not to change
 
-- **The deterministic conflict and budget rules** (`workflow.py:105`). They are the reason the
+- **The deterministic conflict and budget rules** (`workflow.py:114`). They are the reason the
   negotiation converges; the docs' own performance tables show the model-driven patterns costing more
   calls for less control.
 - **The fallback chain.** No official middleware replaces "degrade to validated deterministic output
