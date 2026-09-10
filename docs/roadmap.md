@@ -28,6 +28,9 @@ negotiated, act on what needs a decision, and take the plan with you.
    until one exists.
 3. **Richer trip surface.** An editable day timeline and a map view, with route, time and budget
    checks applied to edits.
+4. **Framework alignment.** The orchestration is the documented subagents + custom-workflow shape,
+   but four things are hand-rolled: dependency injection, result flow, human-in-the-loop and retry.
+   [Framework alignment](framework-alignment.md) has the strategy, the risks and the order.
 
 ## Out of scope
 

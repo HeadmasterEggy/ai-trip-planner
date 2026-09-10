@@ -89,6 +89,8 @@ docs/                               Architecture, orchestration and UI notes
 - [Class model](docs/class-diagram.md) — five diagrams, associations and the rationale behind them
 - [Agent architecture](docs/agent-architecture.md) — the specialist contract and model boundaries
 - [LangGraph orchestration](docs/langgraph-orchestration.md) — the state machine and why it converges
+- [Framework alignment](docs/framework-alignment.md) — how the orchestration compares with the
+  documented multi-agent patterns, what the differences cost, and the order to close them
 - [Module map](docs/module-map.md) — where each concern lives and the rules that keep it there
 
 **Reference**
