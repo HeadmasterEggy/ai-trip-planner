@@ -93,7 +93,7 @@ response format that DeepSeek does not implement.
 
 ## 5. A fix that the next layer rejects
 
-**Symptom.** After fixing #4, DeepSeek V4 answered
+**Symptom.** After fixing #4, DeepSeek V4.1 Flash answered
 `Thinking mode does not support this tool_choice`.
 
 **Cause.** Tool-calling structured output forces a named tool, and V4's thinking

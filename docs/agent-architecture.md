@@ -113,7 +113,7 @@ accepted.
 - **DeepSeek rejects LangChain's default json_schema response format** with
   `This response_format type is unavailable now`. Structured output goes through tool calling
   (`method="function_calling"`).
-- **DeepSeek V4's thinking mode then rejects that tool call** with
+- **DeepSeek V4.1 Flash's thinking mode then rejects that tool call** with
   `Thinking mode does not support this tool_choice`, because tool-calling structured output forces
   a named tool. Thinking is disabled via `extra_body`, not `model_kwargs` — the latter hands the
   field to the OpenAI SDK as a keyword argument, which it rejects with
