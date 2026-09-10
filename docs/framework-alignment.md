@@ -52,8 +52,8 @@ The framework surface is five imports:
 | `ChatOpenAI` | `models.py:26` | provider + structured output |
 | `create_agent` | `supervisor.py:25` | the one real agent loop |
 | `tool`, `ToolRuntime` | `supervisor.py:33` | delegation, and the writer a tool narrates through |
-| `get_stream_writer` | `workflow.py:24` | progress from a node |
-| `StateGraph`, `START`, `END` | `workflow.py:25` | deterministic orchestration |
+| `get_stream_writer` | `workflow.py:25` | progress from a node |
+| `StateGraph`, `START`, `END` | `workflow.py:26` | deterministic orchestration |
 
 `create_agent` itself returns a `CompiledStateGraph` built from `StateGraph` and `ToolNode`
 (`langchain/agents/factory.py:26,28`), so the supervisor is a nested graph inside the `dispatch`
@@ -66,7 +66,7 @@ structured-output call and two are deterministic calculators, behind a framework
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
 | Supervisor | `create_agent` + one tool per worker | `supervisor.py:323` (built once, `ASK_TOOLS`) | Conformant |
-| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:547-558` | Conformant, and what the guide recommends |
+| Outer control | custom `StateGraph` for deterministic steps | `workflow.py:586-597` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
 | Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:117`) | Conformant (required for DeepSeek) |
@@ -92,7 +92,7 @@ These are load-bearing, and the strategy below must not sand them off:
    can neither supply nor rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
-   (`models.py:127`, `workflow.py:378-420`, `workflow.py:471-475`).
+   (`models.py:127`, `workflow.py:417-459`, `workflow.py:510-514`).
 4. **A decision is a preference, not an override.** `apply_decision` writes to long-term memory
    (`decisions.py:49`), which is why a choice survives the next message — something a one-shot
    `interrupt` would not give.
@@ -105,11 +105,9 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
-**Progress.** Waves 1 and 2 have shipped. Wave 1: role-based routing, no delegation argument,
-retries and declared bounds, and progress as a stream (`ui/live.py` deleted). Wave 2: the
-supervisor agent and the graph are each built once with per-run state injected through
-`ToolRuntime` / `Runtime`, and worker results travel as graph state rather than through a side
-channel. Open: Wave 3 (persistence and human in the loop) and Wave 4 (naming, latency).
+**Progress.** Waves 1, 2 and 4 have shipped. 4.1 made the README stop overclaiming and recorded
+which parts deliberate; 4.3 overlapped the no-key path. Open: Wave 3 (persistence and human in
+the loop), the only wave that changes product behaviour.
 
 ### Wave 1 — Non-structural
 
@@ -183,9 +181,9 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 - Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
 - Transient provider failures: **no retry**. A timeout or 429 dropped straight to the deterministic
   fallback, a silent downgrade of the whole section.
-- Loop bounds: the round limit is ours (`workflow.py:539`), and the only bound on the supervisor's
+- Loop bounds: the round limit is ours (`workflow.py:578`), and the only bound on the supervisor's
   own tool loop was LangGraph's default recursion limit, whose failure surfaced as an exception
-  caught by a broad `except` (`workflow.py:420`).
+  caught by a broad `except` (`workflow.py:459`).
 - Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
 
@@ -381,10 +379,10 @@ every node closed over its own options.
 declares `runtime: Runtime[TripRun]` and reads `runtime.context`, and both `invoke` and `stream`
 accept `context=`.
 
-**Shipped.** `TripRun` (`workflow.py:273-288`) holds everything a run needs — specialists, the name
+**Shipped.** `TripRun` (`workflow.py:274-289`) holds everything a run needs — specialists, the name
 index, ports, memory, the round limit, the decisions, and the per-run `extras` scratch. Every node
 that needs it takes `runtime: Runtime[TripRun]`, and `_GRAPH` is compiled once at import
-(`workflow.py:563`). `create_orchestrator_graph()` no longer takes options at all.
+(`workflow.py:602`). `create_orchestrator_graph()` no longer takes options at all.
 
 Two consequences worth recording:
 
@@ -412,7 +410,7 @@ that lives in closures cannot be checkpointed.
 
 #### 3.1 Checkpoint the outermost graph (M)
 
-**Problem.** `graph.compile()` has no checkpointer (`workflow.py:558`), so there is no persistence,
+**Problem.** `graph.compile()` has no checkpointer (`workflow.py:597`), so there is no persistence,
 no resume after a crash, no `get_state`, and no way to pause.
 
 **Official mechanism.** Compile the **outermost** graph with a checkpointer and invoke with a
@@ -440,7 +438,7 @@ does add a second place to bound.
 
 **Problem.** A traveller's decision is applied by re-running the whole graph
 (`decisions.py:49-56`): five specialists, up to three rounds, to change one stay. And an unresolved
-escalation is only *reported* (`workflow.py:259-268`) — nothing pauses.
+escalation is only *reported* (`workflow.py:260-269`) — nothing pauses.
 
 **Official mechanism.** `interrupt()` inside a node, resumed with `Command(resume=...)`. It
 propagates up from nested `create_agent` layers to the outermost graph.
@@ -453,7 +451,7 @@ propagates up from nested `create_agent` layers to the outermost graph.
   human's change costs one specialist, not five.
 - **3b.** Interrupt on `confirm_choice` (stay choices) as well. This **changes the product
   contract**: `_choice_checkpoints` is explicitly non-blocking today ("a traveller who ignores them
-  still gets a complete plan", `workflow.py:199-206`). Making it a pause is a defensible product
+  still gets a complete plan", `workflow.py:200-207`). Making it a pause is a defensible product
   decision, but it is a decision, not a refactor — and it should be argued in `docs/streamlit-ui.md`,
   not smuggled in with a state-model change.
 
@@ -481,15 +479,20 @@ must own the write, or a choice will be recorded twice with two different source
 
 Optional, and worth doing only after Waves 1-3 settle.
 
-#### 4.1 Say "agent" only where a model decides (S)
+#### 4.1 Say "agent" only where a model decides (S) — shipped, in the docs
 
-Three specialists are single structured calls and two are calculators; the docs are clear that a
-single agent with the right prompt is often the right answer, and this project's honest description
-is "one agent, three generator calls, two calculators, and a deterministic reconciler". Consider
-naming them `Worker`/`Section` in code and keeping "agent" for the supervisor, or stating the
-distinction once in `docs/agent-architecture.md`. This is a documentation risk, not a runtime one:
-the current README's "five specialist agents research it in parallel" is only true on the supervisor
-path (see 4.3).
+**Problem.** Three specialists are single structured calls and two are calculators, so "five specialist
+agents" overclaims. The README also claimed the five "research it in parallel", which was only true on
+the supervisor path — item 4.3 fixed that half.
+
+**Decision.** The code keeps the name `Specialist`, and the distinction is stated once, in
+`docs/agent-architecture.md`: the table there names the one agent (the supervisor), the three
+generations, the two calculators and the deterministic reconciler between them. Renaming the protocol
+to `Worker` would touch every specialist, every test and every doc for no functional gain, and
+`Specialist` is the contract the orchestrator actually sees. The README now says what holds them
+together is deterministic rather than negotiated.
+
+**Done when.** A reader can tell which parts deliberate and which compute. *Shipped.*
 
 #### 4.2 Do not adopt `SubAgentMiddleware`/Deep Agents yet (no work)
 
@@ -501,19 +504,32 @@ results would flow through the framework's own convention rather than through va
 deterministic layer controls. Revisit only if the worker count grows past what hand-written tools
 can carry.
 
-#### 4.3 Parallelise the deterministic dispatch (S)
+#### 4.3 Parallelise the deterministic dispatch (S) — shipped
 
-`deterministic_dispatch` is a sequential comprehension (`workflow.py:374`), so with no model the
-five independent specialists run one after another. They are pure over `(brief, ctx)`, and after
-`db59f0e` the progress sink is thread-safe, so a bounded `ThreadPoolExecutor` is now safe. Watch the
-shared `ctx.extras` writes (`specialists/base.py:86`, `specialists/accommodation.py:225`): appends
-and `update` calls from several threads need to be reviewed, or replaced by 2.2 first. Also fix the
-README claim either way: parallelism on the supervisor path comes from the model batching tool calls,
-not from the graph.
+**Problem.** `deterministic_dispatch` was a sequential comprehension, so with no model -- the path
+every deployment without a key runs -- five independent specialists ran one after another. That is
+also the path whose latency *is* the plan's latency.
+
+**Shipped.** A bounded `ThreadPoolExecutor` over the specialists, one thread each. Two things made it
+safe that were not true a wave ago: the specialists report through per-invocation `extras` collected
+into state (2.2), so nothing depends on completion order; and the *reporting* stayed on the node's
+thread. That last one is a real constraint, not tidiness: a stream writer captured from the graph
+resolves its config from a context variable that does not cross threads and raises
+`Called get_config outside of a runnable context` (the finding recorded in 1.4). So the node writes
+`agent_started` for every specialist up front and each `agent_completed` as that future resolves,
+which also keeps the UI's rows updating while the others run.
+
+**Tests.** `test_the_deterministic_dispatch_runs_specialists_concurrently` uses a `barrier` rather than
+a stopwatch: it can only be passed if every specialist is inside its work at once, so it fails loudly
+rather than flakily. `test_progress_is_always_written_on_the_node_thread` pins the constraint that
+shaped the design.
+
+**Done when.** The no-key path overlaps its specialists, and the README's "in parallel" is true of both
+paths. *Shipped.*
 
 ## What not to change
 
-- **The deterministic conflict and budget rules** (`workflow.py:104`). They are the reason the
+- **The deterministic conflict and budget rules** (`workflow.py:105`). They are the reason the
   negotiation converges; the docs' own performance tables show the model-driven patterns costing more
   calls for less control.
 - **The fallback chain.** No official middleware replaces "degrade to validated deterministic output

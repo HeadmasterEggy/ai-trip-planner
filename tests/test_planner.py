@@ -6,6 +6,8 @@ deterministic output, which is exactly the path a reviewer or CI hits.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from trip_planner import workflow as workflow_module
@@ -247,6 +249,9 @@ def test_two_runs_do_not_share_their_context(brief):
     assert first.round == 1
     assert len(first.traces) == len(ALL_SPECIALISTS)  # one round, one trace each
     assert len(second.traces) == len(ALL_SPECIALISTS)  # not ten: extras are per run
+    # The specialists now run concurrently, so trace order must not depend on who
+    # finishes first: the node collects in registration order.
+    assert [t.agent for t in first.traces] == [t.agent for t in second.traces]
 
     # And a later run is not capped by the earlier run's limit.
     multi = run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS))
@@ -313,3 +318,47 @@ def test_a_specialist_sees_only_its_own_extras(brief):
 
     assert all(entry == {} for entry in seen.values())
     assert {t.agent for t in plan.traces} == {s.name for s in ALL_SPECIALISTS}
+
+
+def test_the_deterministic_dispatch_runs_specialists_concurrently(brief):
+    """Without a key this is the path every deployment runs, so its latency is the
+    plan's. The specialists are independent, so they overlap.
+
+    A barrier, not a stopwatch: it can only be passed if they are inside their work
+    at the same time, so it also fails loudly rather than flakily.
+    """
+    barrier = threading.Barrier(len(ALL_SPECIALISTS), timeout=5)
+
+    def wait(name: str):
+        def run(brief_, context, revision=None) -> AgentProposal:
+            barrier.wait()
+            return AgentProposal(agent=name, summary="s", items=[], assumptions=["stub"])
+
+        return run
+
+    specialists = [FunctionSpecialist(s.name, s.label, wait(s.name)) for s in ALL_SPECIALISTS]
+    plan = run_orchestrator(brief, OrchestratorOptions(specialists=specialists, max_rounds=1))
+
+    assert {s.id for s in plan.sections} == {s.name for s in ALL_SPECIALISTS}
+
+
+def test_progress_is_always_written_on_the_node_thread(brief, monkeypatch):
+    """The workers are pooled; the reporting is not.
+
+    A stream writer resolves its config from a context variable that does not cross
+    threads, so a worker that reported its own progress would raise. That is why
+    the node writes `agent_started` up front and `agent_completed` as each future
+    resolves.
+    """
+    threads: list[str] = []
+    real = workflow_module._write_progress
+
+    def watch(event) -> None:
+        threads.append(threading.current_thread().name)
+        real(event)
+
+    monkeypatch.setattr(workflow_module, "_write_progress", watch)
+    run_orchestrator(brief, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1))
+
+    assert threads, "the run should report something"
+    assert set(threads) == {"MainThread"}

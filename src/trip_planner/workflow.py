@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
 
@@ -343,24 +344,33 @@ def create_orchestrator_graph():
     compiled graph serves every trip (see `_GRAPH`).
     """
 
-    def run_one(run: TripRun, specialist, brief, round_no, revision=None):
+    def invoke_specialist(run: TripRun, specialist, brief, round_no, revision=None):
         """Run one specialist: its proposal, and what it reported.
 
         The second half is what the specialist wrote to its context's `extras` --
         fresh per call, so it is exactly this specialist's diagnostics and
         candidates, ready to become state.
+
+        Deliberately does no reporting of its own: this is the unit that runs off
+        the node's thread, and a stream writer resolves its config from a context
+        variable that does not cross threads. The node owns every progress write.
         """
         produced: dict[str, Any] = {}
+        proposal = specialist.invoke(
+            brief, _agent_context(run, brief, round_no, produced), revision
+        )
+        return proposal, produced
+
+    def run_one(run: TripRun, specialist, brief, round_no, revision=None):
+        """Run one specialist on this thread, reporting its progress as it goes."""
         _write_progress(ProgressEvent("agent_started", specialist.name, round_no))
         try:
-            proposal = specialist.invoke(
-                brief, _agent_context(run, brief, round_no, produced), revision
-            )
-            _write_progress(ProgressEvent("agent_completed", specialist.name, round_no))
-            return proposal, produced
+            result = invoke_specialist(run, specialist, brief, round_no, revision)
         except Exception as error:
             _write_progress(ProgressEvent("agent_failed", specialist.name, round_no, str(error)))
             raise
+        _write_progress(ProgressEvent("agent_completed", specialist.name, round_no))
+        return result
 
     def collect(reported: list[dict[str, Any]]) -> dict[str, Any]:
         """Fold per-specialist reports into one state update."""
@@ -372,8 +382,37 @@ def create_orchestrator_graph():
         return {"traces": traces, "stay_choices": choices}
 
     def deterministic_dispatch(run: TripRun, brief: TripBrief) -> tuple[list, dict[str, Any]]:
-        results = [run_one(run, s, brief, 1) for s in run.specialists]
-        return [proposal for proposal, _ in results], collect([p for _, p in results])
+        """Run every specialist concurrently.
+
+        They are independent and pure over `(brief, context)`, and the reports
+        come back as values rather than into a shared accumulator, so nothing
+        depends on the order they finish in -- the caller restores registration
+        order. With no model configured this is the path a deployment runs, so its
+        latency is the plan's latency.
+
+        Progress is reported here rather than inside the worker, for the reason in
+        `invoke_specialist`: a writer captured from the graph does not work off the
+        node's thread. Each specialist still gets its `agent_started`, and its
+        `agent_completed` lands as that future resolves, so the UI's rows still
+        update while the others run.
+        """
+        for specialist in run.specialists:
+            _write_progress(ProgressEvent("agent_started", specialist.name, 1))
+
+        results: dict[str, tuple] = {}
+        with ThreadPoolExecutor(max_workers=len(run.specialists)) as pool:
+            futures = {pool.submit(invoke_specialist, run, s, brief, 1): s for s in run.specialists}
+            for future in as_completed(futures):
+                specialist = futures[future]
+                try:
+                    results[specialist.name] = future.result()
+                except Exception as error:
+                    _write_progress(ProgressEvent("agent_failed", specialist.name, 1, str(error)))
+                    raise
+                _write_progress(ProgressEvent("agent_completed", specialist.name, 1))
+
+        ordered = [results[s.name] for s in run.specialists if s.name in results]
+        return [proposal for proposal, _ in ordered], collect([p for _, p in ordered])
 
     def dispatch(state: State, runtime: Runtime[TripRun]) -> State:
         run = runtime.context

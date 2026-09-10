@@ -17,6 +17,22 @@ A specialist owns a durable role: its model routing, its tools, its output schem
 must not break. The workflow owns everything about *when* a specialist runs. Specialists never call
 each other.
 
+## One agent, three generations, two calculators
+
+"Multi-agent" is a loose word for this system, so it is worth saying exactly where the agents are:
+
+| Who | What it is | Decides |
+| --- | --- | --- |
+| `supervisor` | a real agent loop (`create_agent`) with one tool per specialist | **who** works, and when |
+| `itinerary`, `destination-guide`, `dining` | one structured-output generation each, grounded in maps candidates | the content of their section, inside a schema |
+| `transport`, `accommodation` | deterministic calculators over the booking and maps ports | nothing: a model never prices a leg or a stay |
+| `workflow` | a deterministic state machine | conflicts, budget red lines, the round limit, escalation |
+
+The name `Specialist` is kept for all five because that is the contract the orchestrator sees --
+`invoke(brief, ctx, revision) -> AgentProposal` -- and because the five are interchangeable from
+outside. It is not a claim that five models deliberate: two of them never call a model at all, and the
+reconciler between them is arithmetic and clock comparisons rather than a negotiation.
+
 ## The Specialist protocol
 
 One immutable entry point serves both the initial plan and every revision:
