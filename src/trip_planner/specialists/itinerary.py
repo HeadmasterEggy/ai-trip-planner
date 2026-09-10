@@ -16,7 +16,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief
-from ..models import create_structured_invoker
+from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, record_trace, trip_days
 
@@ -211,6 +211,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             "trip days": str(days),
             "activity budget cap": f"USD {brief.budgetTotal * ACTIVITY_BUDGET_SHARE:,.2f}",
             "min transfer": f"{MIN_TRANSFER_MINUTES} minutes",
+            "route": describe_route("itinerary"),
         },
         revision=revision,
         fallback_reason=fallback_reason,

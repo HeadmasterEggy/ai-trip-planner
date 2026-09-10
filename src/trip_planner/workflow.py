@@ -17,6 +17,7 @@ budget overrun oscillated 29.25% -> 16.50% -> 25.25% without ever settling.
 from __future__ import annotations
 
 import operator
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ from .contracts import (
 from .memory import memory as default_memory
 from .ports import AgentContext, ToolGateway
 from .specialists import ALL_SPECIALISTS
+from .specialists.base import stamp_duration
 from .supervisor import dispatch_with_supervisor, revise_with_supervisor
 from .tools.maps import create_tool_gateway
 
@@ -434,9 +436,11 @@ def create_orchestrator_graph():
         variable that does not cross threads. The node owns every progress write.
         """
         produced: dict[str, Any] = {}
+        started = time.perf_counter()
         proposal = specialist.invoke(
             brief, _agent_context(run, brief, round_no, produced), revision
         )
+        stamp_duration(produced, round(time.perf_counter() - started, 3))
         return proposal, produced
 
     def run_one(run: TripRun, specialist, brief, round_no, revision=None):

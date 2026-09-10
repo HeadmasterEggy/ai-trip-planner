@@ -17,6 +17,7 @@ or the loop fails, so the workflow keeps running offline.
 from __future__ import annotations
 
 import operator
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -46,6 +47,7 @@ from .contracts import (
 from .models import create_routed_chat_model
 from .ports import AgentContext, ToolGateway
 from .specialists import ALL_SPECIALISTS
+from .specialists.base import stamp_duration
 
 DISPATCH_PROMPT = (
     "You are the trip-planning supervisor. Decide which specialist tools are needed for the "
@@ -249,6 +251,7 @@ def _ask_tool(specialist: Any) -> Any:
         resolved = _specialist_for(run, specialist.name)
         produced: dict[str, Any] = {}
         runtime.stream_writer(ProgressEvent("agent_started", specialist.name, run.round))
+        started = time.perf_counter()
         try:
             proposal = resolved.invoke(run.brief, _agent_context(run, produced), None)
         except Exception as error:
@@ -256,6 +259,7 @@ def _ask_tool(specialist: Any) -> Any:
                 ProgressEvent("agent_failed", specialist.name, run.round, str(error))
             )
             raise
+        stamp_duration(produced, round(time.perf_counter() - started, 3))
         runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, run.round))
         return _report(proposal, produced, tool_call_id)
 
@@ -288,6 +292,7 @@ def _revise_tool(specialist: Any) -> Any:
         resolved = _specialist_for(run, specialist.name)
         produced: dict[str, Any] = {}
         runtime.stream_writer(ProgressEvent("agent_started", specialist.name, run.round))
+        started = time.perf_counter()
         try:
             proposal = resolved.invoke(run.brief, _agent_context(run, produced), request)
         except Exception as error:
@@ -295,6 +300,7 @@ def _revise_tool(specialist: Any) -> Any:
                 ProgressEvent("agent_failed", specialist.name, run.round, str(error))
             )
             raise
+        stamp_duration(produced, round(time.perf_counter() - started, 3))
         runtime.stream_writer(ProgressEvent("agent_completed", specialist.name, run.round))
         if proposal.agent != request.targetAgent:
             raise ValueError(f"Revision tool returned {proposal.agent} for {request.targetAgent}.")

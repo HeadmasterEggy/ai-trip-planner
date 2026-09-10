@@ -89,6 +89,23 @@ def create_routed_chat_model(task: str) -> ChatOpenAI | None:
     )
 
 
+def describe_route(task: str) -> str:
+    """Which provider and model this role would use, without building one.
+
+    Read from the same environment as `create_routed_chat_model`, so a specialist can
+    put it in its evidence: after item 1.1 every role is routable on its own, and
+    "which model answered this section" is the first thing worth knowing when a
+    section looks wrong. "unconfigured" is a real answer -- that path falls back to
+    deterministic output.
+    """
+    provider = MODEL_ROUTING.get(task, "deepseek")
+    if provider == "deepseek":
+        key, model = os.getenv("DEEPSEEK_API_KEY"), os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
+    else:
+        key, model = os.getenv("MINIMAX_API_KEY"), os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
+    return f"{provider}:{model}" if key else "unconfigured"
+
+
 def _with_correction(prompt: str, name: str, error: Exception) -> str:
     """Feed the failure back so the model can repair its own output once."""
     return (

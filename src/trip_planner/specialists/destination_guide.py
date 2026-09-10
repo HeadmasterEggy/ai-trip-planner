@@ -19,7 +19,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, UserPreference
-from ..models import create_structured_invoker
+from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, record_trace
 
@@ -171,6 +171,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             "passport": brief.nationality or "not stated",
             "confirmed preferences": ", ".join(f"{p.key}={p.value}" for p in preferences)
             or "none recorded",
+            "route": describe_route("destination-guide"),
         },
         revision=revision,
         fallback_reason=fallback_reason,

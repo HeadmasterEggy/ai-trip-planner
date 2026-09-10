@@ -15,7 +15,7 @@ from trip_planner.chat import BriefPatch, create_model_extractor, run_trip_chat
 from trip_planner.contracts import ChatRequest, RevisionRequest
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.memory import InMemoryStore
-from trip_planner.models import MODEL_ROUTING
+from trip_planner.models import MODEL_ROUTING, describe_route
 from trip_planner.ports import AgentContext, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.supervisor import dispatch_with_supervisor, revise_with_supervisor
@@ -117,3 +117,14 @@ def test_a_chat_turn_requests_the_reply_route(asked):
 
     assert "brief-extraction" not in asked  # the injected extractor was used
     assert "reply" in asked
+
+
+def test_the_route_description_follows_the_credentials(monkeypatch):
+    """`unconfigured` is a real answer: that path falls back to deterministic output."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    assert describe_route("itinerary") == "unconfigured"
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    assert describe_route("itinerary") == "deepseek:deepseek-v4-flash"

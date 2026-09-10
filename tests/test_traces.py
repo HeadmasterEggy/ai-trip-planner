@@ -137,3 +137,30 @@ def test_a_revision_that_falls_back_is_traced_as_a_fallback(monkeypatch):
     assert trace.fallbackReason and "geography conflict" in trace.fallbackReason
     assert proposal.assumptions[0] == "Planner source: deterministic fallback."
     assert proposal.conflictsWith == []
+
+
+def test_a_trace_records_how_long_the_specialist_took():
+    """Per-section cost is otherwise invisible, and roles are routable apart now."""
+    plan = plan_it(max_rounds=1)
+    assert plan.traces
+    assert all(t.seconds is not None and t.seconds >= 0 for t in plan.traces)
+
+
+def test_evidence_names_the_route_that_would_answer():
+    """`unconfigured` is a real answer: that is the deterministic path."""
+    plan = plan_it(max_rounds=1)
+    for agent in ("itinerary", "destination-guide", "dining"):
+        entry = next(t for t in plan.traces if t.agent == agent)
+        assert entry.evidence["route"] == "unconfigured"
+
+    # The calculators never call a model, so they carry no route.
+    for agent in ("transport", "accommodation"):
+        entry = next(t for t in plan.traces if t.agent == agent)
+        assert "route" not in entry.evidence
+
+
+def test_the_rendered_trace_shows_the_time():
+    plan = plan_it(max_rounds=1)
+    html = trace_block(plan.traces, "itinerary")
+    seconds = next(t.seconds for t in plan.traces if t.agent == "itinerary")
+    assert f"{seconds:.2f}s" in html
