@@ -1,8 +1,13 @@
 # AI Trip Planner
 
-A single-user, multi-agent travel workspace. Describe a trip, and five specialist agents research
-it in parallel under a LangGraph orchestrator that checks their proposals against each other,
-re-plans what conflicts, and escalates anything it cannot resolve.
+A single-user, multi-agent travel workspace. Describe a trip, and five specialists work on it in
+parallel under a LangGraph orchestrator that checks their proposals against each other, re-plans what
+conflicts, and escalates anything it cannot resolve.
+
+One of them is an agent in the strict sense: the supervisor, which decides *who* works. Three are
+single structured generations (day plan, guide, dining) and two are deterministic calculators
+(transport, accommodation) that no model is allowed to price. What holds them together — conflict
+detection, the budget rules and the stopping condition — is deterministic, not negotiated.
 
 Python 3.11+ · LangChain · LangGraph · Pydantic · Streamlit
 
