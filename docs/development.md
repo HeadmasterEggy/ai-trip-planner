@@ -17,13 +17,33 @@ offline.
 ## Checks
 
 ```bash
-uv run pytest            # 43 tests, no network
+uv run pytest                    # 112 tests, no network
 uv run ruff check .
-uv run ruff format .
+uv run ruff format --check .
 ```
 
-The tests never reach a provider. Anything that would — a live model, a real maps call — is behind
-an injected port or an explicit `specialists=` argument, so CI stays deterministic and free.
+`.github/workflows/checks.yml` runs exactly those on 3.11, 3.12 and 3.13 for every push to `main`
+and every pull request, so a change is verified by the offline path rather than by whoever
+remembered to run it.
+
+The default run never reaches a provider: anything that would — a live model, a real maps call — sits
+behind an injected port or an explicit `specialists=` argument. That keeps the suite deterministic and
+free, and it is also its blind spot: three defects in `docs/debugging-log.md` existed *only* with a key
+configured.
+
+## Live provider checks
+
+The one path the offline suite cannot exercise has its own opt-in tests:
+
+```bash
+DEEPSEEK_API_KEY=... RUN_LIVE_TESTS=1 uv run pytest -m live
+```
+
+Two cheap calls, no five-specialist fan-out. They cover what a scripted model cannot: that the
+provider still accepts the structured-output arrangement `models.py` documents (function calling with
+thinking disabled, because DeepSeek rejects both the json_schema response format and a forced
+`tool_choice` in thinking mode), and that it still calls a delegation tool that takes no arguments —
+which is the one thing item 1.2 of `docs/framework-alignment.md` could not verify offline.
 
 ## Verifying a deployment change
 

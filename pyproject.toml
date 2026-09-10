@@ -27,6 +27,11 @@ packages = ["src/trip_planner"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    # Tests that call a real provider. Skipped unless RUN_LIVE_TESTS=1 and a key is
+    # set, so the default run stays offline; see tests/test_live_provider.py.
+    "live: calls a real model provider (opt-in)",
+]
 
 [tool.ruff]
 line-length = 100
