@@ -85,11 +85,22 @@ docs/                               Architecture, orchestration and UI notes
 
 ## Documentation
 
-- [Agent architecture](docs/agent-architecture.md)
-- [LangGraph orchestration](docs/langgraph-orchestration.md)
-- [Streamlit UI](docs/streamlit-ui.md)
-- [Observability](docs/observability.md)
+**Design**
+- [Class model](docs/class-diagram.md) — five diagrams, associations and the rationale behind them
+- [Agent architecture](docs/agent-architecture.md) — the specialist contract and model boundaries
+- [LangGraph orchestration](docs/langgraph-orchestration.md) — the state machine and why it converges
+- [Module map](docs/module-map.md) — where each concern lives and the rules that keep it there
+
+**Reference**
+- [Programmatic API](docs/api.md) — `run_trip_chat`, `run_orchestrator` and what comes back
+- [Cost and lodging rules](docs/cost-rules.md) — the conventions no model is allowed to invent
+- [Streamlit UI](docs/streamlit-ui.md) — the three views and what Streamlit cannot do
+- [Observability](docs/observability.md) — LangSmith, and what it does not capture here
+
+**Notes**
 - [Debugging log](docs/debugging-log.md) — how the awkward failures were actually found
+- [Development](docs/development.md) — setup, checks, verifying a deployment change
+- [Roadmap](docs/roadmap.md) — what is done and what is next
 
 ## Talking to it
 
