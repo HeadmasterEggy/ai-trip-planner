@@ -32,6 +32,15 @@ place:
 The round suffix is what makes the negotiation visible: it shows which specialists were sent back
 to re-plan and which settled on the first pass.
 
+The callback is wrapped by `ui.live.bind_to_script_run` before it is handed to the orchestrator, and
+that wrapper is load-bearing rather than decorative. Which thread the event arrives on is decided by
+the specialist, and under the supervisor the answer is "a LangGraph tool worker": `ToolNode` runs a
+batch of tool calls on a thread pool. A worker thread has no `ScriptRunContext`, so an unbound
+callback raises `NoSessionContext` inside the delegation tool — before the specialist has run — and
+the whole supervisor fan-out collapses to the deterministic fallback. The wrapper captures the
+context on the script's thread and re-attaches it on every call, which is also what makes it safe on
+a pooled thread that outlives one run.
+
 ## Three views of one plan
 
 The plan is stored per specialist, but nobody reads it that way. Two of the

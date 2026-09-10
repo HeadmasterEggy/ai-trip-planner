@@ -212,6 +212,46 @@ avoided.
 
 ---
 
+## 11. A feature that only works without an API key
+
+**Symptom.** With a key configured, the five agent rows sat at "Queued" for the
+whole run. Without one, the same rows animated correctly. The plan that came out
+was fine either way, which is why nobody had chased it.
+
+**Why it misled.** "Progress display is cosmetic" made it a low priority, and
+the offline path — the one CI and a fresh checkout take — worked. The rows were
+also only ever checked on that path.
+
+**Cause.** `on_progress` writes Streamlit widgets, and the thread it arrives on
+is not ours to choose. On the deterministic path it is the script's own thread.
+Under the supervisor it is a LangGraph worker thread: `ToolNode._func` runs a
+batch of tool calls through `executor.map`. A worker thread has no
+`ScriptRunContext`, so the widget write raised `NoSessionContext` — and
+`delegate` emits `agent_started` *before* calling the specialist, so every tool
+call died before doing any work. The supervisor collected nothing, raised
+"completed without delegating", and the workflow fell back to deterministic
+dispatch. The visible cost was a frozen progress panel; the real cost was that
+the supervisor never ran at all.
+
+**Fix.** `ui.live.bind_to_script_run` captures the context on the script thread
+and re-attaches it per call, so worker threads enqueue their deltas on the
+session like any other write. Streamlit documents the self-attach case
+(`add_script_run_ctx` from inside the worker also seeds `ThreadState`), which is
+what keeps the write from raising instead of merely disappearing.
+
+**How it was found.** The server log held `ThreadPoolExecutor-7_0` …
+`ThreadPoolExecutor-11_0`, five threads warning three times each — the shape of
+one parallel tool batch. Reproducing the two lines `ToolNode` uses
+(`get_executor_for_config` + `executor.map`) around the supervisor's own tools
+showed the callback landing on five worker threads, and an `AppTest` script with
+a real run context showed the write raising `NoSessionContext` off-thread and
+succeeding once bound.
+
+**Same shape as entry #10.** The path that was exercised (no key, deterministic
+dispatch) was not the path that was shipped (key present, supervisor).
+
+---
+
 ## Recurring lessons
 
 **A silent fallback is worse than a crash.** Most of these took time because the
