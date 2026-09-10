@@ -57,13 +57,27 @@ from a plan that simply ran out of rounds.
 
 ## Layout
 
-The sidebar is the filter rail — Streamlit collapses it natively, which is what that rail wants:
-visible while you are adjusting the trip, out of the way while you are reading the plan. Nothing in
-it is required. Every field can simply be said to the planner instead, which is why the form no
-longer leads the page.
+Two rails around a conversation.
 
-The conversation sits in the middle and the plan to its right, so a change and its consequence are
-side by side.
+The **left rail** is the sidebar, which Streamlit collapses natively: visible while you are
+adjusting the trip, out of the way while you are reading the plan. Nothing in it is required —
+every field can simply be said to the planner, which is why the form no longer leads the page. The
+brand sits at the top of it, because that is already the page's top-left corner and a full-width
+title was spending vertical space the conversation needed.
+
+The **right rail** holds the plan and collapses the same way, through a chevron on its edge.
+Streamlit has no second sidebar, so it is two column ratios and a session flag: `[1, 0.85]` open,
+`[1, 0.045]` closed.
+
+The **conversation** sits between them and takes the width the plan gives back.
+
+Two details that were wrong first time:
+
+- The handle is styled through Streamlit's own `st-key-toggle-plan` class rather than by DOM
+  adjacency. The button sits several wrappers deep and gains another when it has a tooltip, so a
+  sibling selector matched during development and silently stopped matching after.
+- It is `position: sticky`. A rail control that scrolls away with the content cannot bring the rail
+  back — collapsed, it was the only way to reopen the panel and it sat 240px above the viewport.
 
 ## Seeing how each specialist decided
 

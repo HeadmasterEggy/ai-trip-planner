@@ -106,6 +106,39 @@ CSS = """
 
 .tp-note { color: var(--tp-text-mut); font-size: 12px; }
 
+/* The plan rail's handle.
+   Targeted by Streamlit's own `st-key-<widget key>` class rather than by DOM
+   adjacency: the button sits several wrappers deep and gains another when it
+   has a tooltip, so a sibling selector silently stops matching.
+   Sticky because a rail control that scrolls away with the content cannot be
+   used to bring the rail back -- collapsed, it was the only way to reopen the
+   panel and it sat 240px above the viewport. */
+.st-key-toggle-plan {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+}
+.st-key-toggle-plan button {
+  border: 1px solid var(--tp-border) !important;
+  background: var(--tp-surface-2) !important;
+  color: var(--tp-text-dim) !important;
+  padding: 2px 8px !important;
+  min-height: 0 !important;
+  line-height: 1.4 !important;
+}
+.st-key-toggle-plan button:hover {
+  border-color: var(--tp-accent) !important;
+  color: var(--tp-accent) !important;
+}
+
+.tp-brand {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--tp-accent);
+  margin-bottom: 2px;
+}
+
 /* Day timeline. Items from different specialists share one axis, which is the
    only way a clash between them is visible to a reader. */
 .tp-tl__day { margin-bottom: 14px; }

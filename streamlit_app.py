@@ -138,6 +138,13 @@ def render_brief_form() -> TripBrief | None:
 
 
 with st.sidebar:
+    # The brand sits here rather than above the main column: at the top of the
+    # sidebar it is already the page's top-left corner, and the vertical space
+    # a full-width title took belongs to the conversation.
+    st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
+    st.caption("Five specialists negotiate your trip; conflicts are re-planned before you see it.")
+    st.divider()
+
     # Streamlit's sidebar collapses natively, which is what a filter rail wants:
     # visible when you are adjusting the trip, out of the way when you are
     # reading the plan. Everything here can also just be said to the planner.
@@ -172,16 +179,26 @@ with st.sidebar:
         st.rerun()
 
 
-st.title("✈️ AI Trip Planner")
-st.caption(
-    "Describe a trip. Five specialists negotiate it; conflicts are re-planned before you see it."
-)
-st.info(
-    "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
-    "act on with the venue or an official source before booking."
-)
+st.session_state.setdefault("show_plan", True)
 
-chat_column, plan_column = st.columns([1, 1.1], gap="large")
+# The plan is a rail, not a fixed column: collapsed it leaves a handle on the
+# edge, exactly like the filter rail on the left. While you are talking to the
+# planner the plan is reference material, and a wide column of it crowds out
+# the conversation it is meant to accompany.
+if st.session_state.show_plan:
+    chat_column, plan_column = st.columns([1, 0.85], gap="large")
+else:
+    chat_column, plan_column = st.columns([1, 0.045], gap="small")
+
+with plan_column:
+    if st.button(
+        "›" if st.session_state.show_plan else "‹",
+        key="toggle-plan",
+        help="Hide the trip plan" if st.session_state.show_plan else "Show the trip plan",
+        use_container_width=not st.session_state.show_plan,
+    ):
+        st.session_state.show_plan = not st.session_state.show_plan
+        st.rerun()
 
 
 # --------------------------------------------------------------------------
@@ -380,11 +397,12 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
     st.session_state.messages.append({"role": "assistant", "content": response.reply})
 
 
-with plan_column:
-    if st.session_state.plan is not None:
-        render_plan(st.session_state.plan)
-    else:
-        st.caption("Your trip plan will appear here once the team has run.")
+if st.session_state.show_plan:
+    with plan_column:
+        if st.session_state.plan is not None:
+            render_plan(st.session_state.plan)
+        else:
+            st.caption("Your trip plan will appear here once the team has run.")
 
 
 EXAMPLES = [
@@ -416,6 +434,10 @@ with chat_column:
 
 # A clicked example and a typed message take the same path from here.
 prompt = st.chat_input("Tell the team what to change…") or st.session_state.pop("pending", None)
+st.caption(
+    "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
+    "act on with the venue or an official source before booking."
+)
 
 if submitted_brief is not None:
     plan_trip(
