@@ -835,6 +835,16 @@ class PlanStream:
             _CHECKPOINTER.delete_thread(self.thread_id)
 
 
+def forget_thread(thread_id: str) -> None:
+    """Drop a paused run's checkpoint.
+
+    Called when a pause is superseded -- a traveller who asks something else instead
+    of answering it -- so the in-process saver does not accumulate threads nobody
+    will ever resume.
+    """
+    _CHECKPOINTER.delete_thread(thread_id)
+
+
 def _new_thread_id(brief: TripBrief) -> str:
     """A fresh thread per run.
 

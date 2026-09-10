@@ -399,6 +399,23 @@ def test_an_escalation_pauses_with_the_plan_already_built(brief):
     assert state.values["plan"].tripId == brief.tripId
 
 
+def test_forgetting_a_paused_thread_drops_its_checkpoint(brief):
+    """A pause that is superseded must not leave a thread behind.
+
+    The saver is in-process, so a traveller who asks something else rather than
+    answering would otherwise accumulate threads nobody resumes.
+    """
+    stream = run_orchestrator_stream(_tight(brief), OrchestratorOptions(max_rounds=1))
+    list(stream)
+    assert stream.interrupt is not None
+    thread = workflow_module._thread_config(stream.thread_id)
+    assert workflow_module._GRAPH.get_state(thread).values  # there to be resumed
+
+    workflow_module.forget_thread(stream.thread_id)
+
+    assert workflow_module._GRAPH.get_state(thread).values == {}
+
+
 def test_resuming_with_accept_marks_the_escalation_answered(brief):
     stream = run_orchestrator_stream(_tight(brief), OrchestratorOptions(max_rounds=1))
     list(stream)

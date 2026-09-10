@@ -12,6 +12,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -27,7 +28,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 from trip_planner.chat import run_trip_chat_stream
 from trip_planner.contracts import ChatRequest, TripBrief, TripPlan, brief_problem
 from trip_planner.decisions import apply_decision
-from trip_planner.demo import DEMO_BRIEF
+from trip_planner.demo import demo_brief
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
@@ -45,7 +46,7 @@ from trip_planner.ui.render import (
     trace_block,
 )
 from trip_planner.ui.theme import CSS
-from trip_planner.workflow import OrchestratorOptions
+from trip_planner.workflow import OrchestratorOptions, forget_thread
 
 st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
 load_dotenv()
@@ -85,10 +86,19 @@ def _load_cloud_secrets() -> None:
 
 _load_cloud_secrets()
 
+# One identity per session. It used to be a fixed "trip-demo"/"demo-user" pair, which
+# meant that on a shared deployment every visitor wrote into the same memory buckets:
+# one traveller's confirmed stay would appear in the next one's plan. A session-scoped
+# id costs nothing locally and is the difference between a demo and a deployment.
+_SESSION = uuid4().hex[:12]
+st.session_state.setdefault("user_id", f"user-{_SESSION}")
+
 st.session_state.setdefault("plan", None)
-st.session_state.setdefault("brief", DEMO_BRIEF)
+st.session_state.setdefault(
+    "brief", demo_brief().model_copy(update={"userId": st.session_state.user_id})
+)
 st.session_state.setdefault("messages", [])
-st.session_state.setdefault("trip_id", "trip-demo")
+st.session_state.setdefault("trip_id", f"trip-{_SESSION}")
 st.session_state.setdefault("pending_escalation", None)
 
 
@@ -125,6 +135,7 @@ def render_brief_form() -> TripBrief | None:
         return None
     brief = TripBrief(
         tripId=st.session_state.trip_id,
+        userId=st.session_state.user_id,
         destination=destination.strip(),
         dates=(start.isoformat(), end.isoformat()),
         groupSize=int(group),
@@ -179,7 +190,9 @@ with st.sidebar:
     st.divider()
     if st.button("Start a new trip", use_container_width=True):
         st.session_state.plan = None
-        st.session_state.brief = DEMO_BRIEF
+        st.session_state.brief = demo_brief().model_copy(
+            update={"userId": st.session_state.user_id}
+        )
         st.session_state.messages = []
         st.rerun()
 
@@ -385,6 +398,11 @@ def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None
     """
     st.session_state.messages.append({"role": "user", "content": message})
     paused = st.session_state.get("pending_escalation")
+    if decision is None and paused:
+        # Asking something else supersedes the pause: drop its checkpoint instead of
+        # keeping a thread nobody will resume.
+        forget_thread(paused["threadId"])
+        paused = None
 
     with chat_column:
         st.markdown("**Agent activity**")

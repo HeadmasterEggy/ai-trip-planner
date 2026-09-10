@@ -128,6 +128,9 @@ with no API key at all.
 
 ## Scope
 
-Single-user: enter a trip, inspect grounded recommendations, see what needs a human decision, and
-export the plan. Multi-user editing, social features, payments and booking fulfilment are out of
-scope.
+Enter a trip, inspect grounded recommendations, see what needs a human decision, and export the
+plan. Multi-user editing, social features, payments and booking fulfilment are out of scope.
+
+Sessions are isolated: each browser session gets its own trip and user id, so two visitors to a
+shared deployment do not see each other's plans or inherit each other's preferences. Within a
+session it is one traveller, deliberately — the memory, the checkpoints and the UI all assume it.
