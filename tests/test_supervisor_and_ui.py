@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from trip_planner.contracts import ProposalItem, RevisionRequest, TripPlan
+from trip_planner.contracts import ProposalItem, TripPlan
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.memory import InMemoryStore
 from trip_planner.ports import AgentContext, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.specialists.itinerary import DraftActivity, ItineraryDraft, travel_conflicts
 from trip_planner.supervisor import (
-    create_revision_tools,
-    create_supervisor_tools,
+    ASK_TOOLS,
+    REVISE_TOOLS,
     dispatch_with_supervisor,
 )
 from trip_planner.tools.booking import MockBooking
@@ -31,45 +31,49 @@ def ctx() -> AgentContext:
     )
 
 
-def test_one_delegation_tool_per_specialist_with_a_stable_name(ctx):
-    tools = create_supervisor_tools(ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None)
-    names = [t.name for t in tools]
-    assert names == [
+def test_every_specialist_has_one_delegation_tool_with_a_stable_name():
+    """The tool set is built once for the process, keyed by the canonical names.
+
+    A run supplies the specialist instances through `ToolRuntime.context`, so
+    nothing about the tools varies per request (item 2.1).
+    """
+    assert list(ASK_TOOLS) == [
+        "itinerary",
+        "transport",
+        "accommodation",
+        "destination-guide",
+        "dining",
+    ]
+    assert [ASK_TOOLS[name].name for name in ASK_TOOLS] == [
         "ask_itinerary_specialist",
         "ask_transport_specialist",
         "ask_accommodation_specialist",
         "ask_destination_guide_specialist",
         "ask_dining_specialist",
     ]
-    assert all(t.description for t in tools)  # an empty description hides the tool
+    assert [REVISE_TOOLS[name].name for name in REVISE_TOOLS] == [
+        "revise_itinerary_specialist",
+        "revise_transport_specialist",
+        "revise_accommodation_specialist",
+        "revise_destination_guide_specialist",
+        "revise_dining_specialist",
+    ]
+    # An empty description hides the tool from the model.
+    assert all(entry.description for entry in (*ASK_TOOLS.values(), *REVISE_TOOLS.values()))
 
 
-def test_the_delegation_tools_take_no_arguments(ctx):
+def test_the_delegation_tools_take_no_arguments():
     """The supervisor chooses *who*, never *what*.
 
     A tool argument would be somewhere for the model to restate the request, and
     the deterministic rules downstream would then be checking the restatement
-    rather than the brief. An empty schema is the constraint, not an oversight.
+    rather than the brief. An empty schema is the constraint, not an oversight:
+    the validated `RevisionRequest` a revision tool needs arrives in the run
+    context, not from the model.
     """
-    request = RevisionRequest(
-        tripId="t1", targetAgent="transport", reason="over budget", constraints=["cut 30%"]
-    )
-    tools = create_supervisor_tools(
-        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None
-    ) + create_revision_tools(ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None)
-
-    assert tools
-    for entry in tools:
+    for entry in (*ASK_TOOLS.values(), *REVISE_TOOLS.values()):
         assert entry.args == {}, entry.name
         assert entry.tool_call_schema.model_json_schema().get("properties", {}) == {}, entry.name
-
-
-def test_revision_tools_are_built_only_for_pending_requests(ctx):
-    request = RevisionRequest(
-        tripId="t1", targetAgent="accommodation", reason="over budget", constraints=["cut 30%"]
-    )
-    tools = create_revision_tools(ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None)
-    assert [t.name for t in tools] == ["revise_accommodation_specialist"]
 
 
 def test_dispatch_raises_without_a_model_so_the_caller_can_fall_back(ctx, monkeypatch):

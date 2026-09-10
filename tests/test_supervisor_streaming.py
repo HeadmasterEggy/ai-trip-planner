@@ -18,11 +18,12 @@ from langchain_core.messages import AIMessage
 from scripted import ScriptedChatModel, tool_call, tool_calls
 
 from trip_planner import supervisor as supervisor_module
-from trip_planner.contracts import ProgressEvent
+from trip_planner.contracts import AgentProposal, ProgressEvent
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.memory import InMemoryStore
 from trip_planner.ports import AgentContext, ToolGateway
 from trip_planner.specialists import ALL_SPECIALISTS
+from trip_planner.specialists.base import FunctionSpecialist
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
 from trip_planner.workflow import (
@@ -162,3 +163,76 @@ def test_a_stream_refuses_to_be_consumed_twice():
 
     with pytest.raises(RuntimeError, match="consumed once"):
         list(stream)
+
+
+def test_the_supervisor_agent_is_built_once(monkeypatch, ctx):
+    """Static tools plus a runtime context mean there is nothing to rebuild.
+
+    `create_agent` used to run on every dispatch and every revision round, only
+    because the tools were closures over one run.
+    """
+    model = ScriptedChatModel(
+        responses=[
+            tool_call("ask_itinerary_specialist"),
+            AIMessage(content="done"),
+            tool_call("ask_itinerary_specialist"),
+            AIMessage(content="done"),
+        ]
+    )
+    monkeypatch.setattr(supervisor_module, "create_routed_chat_model", lambda task: model)
+
+    built = []
+    real = supervisor_module.create_agent
+
+    def counting(*args, **kwargs):
+        built.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor_module, "create_agent", counting)
+
+    supervisor_module.dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda e: None)
+    supervisor_module.dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda e: None)
+
+    assert len(built) == 1  # built on first use, then reused
+    assert model.index == 4  # ...and the second run really did run
+
+
+def test_each_run_uses_its_own_specialists(monkeypatch, ctx):
+    """The tool resolves its specialist from the run, not from a closure.
+
+    The tools are shared for the process now, so this is the property that keeps
+    a run's injected specialists from leaking into the next one.
+    """
+    used: list[str] = []
+
+    def tagged(tag: str) -> list:
+        def run(brief, context, revision=None) -> AgentProposal:
+            used.append(tag)
+            return AgentProposal(agent="itinerary", summary=tag, items=[], assumptions=["stub"])
+
+        # A stub specialist cannot raise for pricing; only the tag matters here.
+        return [
+            FunctionSpecialist("itinerary", "Day plan", run) if s.name == "itinerary" else s
+            for s in ALL_SPECIALISTS
+        ]
+
+    model = ScriptedChatModel(
+        responses=[
+            tool_call("ask_itinerary_specialist"),
+            AIMessage(content="done"),
+            tool_call("ask_itinerary_specialist"),
+            AIMessage(content="done"),
+        ]
+    )
+    monkeypatch.setattr(supervisor_module, "create_routed_chat_model", lambda task: model)
+
+    first = supervisor_module.dispatch_with_supervisor(
+        tagged("first"), DEMO_BRIEF, ctx, lambda e: None
+    )
+    second = supervisor_module.dispatch_with_supervisor(
+        tagged("second"), DEMO_BRIEF, ctx, lambda e: None
+    )
+
+    assert used == ["first", "second"]
+    assert [p.summary for p in first] == ["first"]
+    assert [p.summary for p in second] == ["second"]
