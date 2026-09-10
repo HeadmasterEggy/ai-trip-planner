@@ -21,10 +21,14 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
+from uuid import uuid4
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from langgraph.types import Command, interrupt
 from langsmith import traceable
 
 from .budget import (
@@ -41,6 +45,7 @@ from .contracts import (
     HitlCheckpoint,
     NegotiationRound,
     ProgressEvent,
+    ProposalItem,
     RevisionRequest,
     SpecialistTrace,
     TripBrief,
@@ -88,6 +93,10 @@ class State(TypedDict, total=False):
     negotiation: list[NegotiationRound]
     stalled: bool
     plan: TripPlan
+    # Set once the traveller has answered an escalation, so the pause happens at
+    # most once per run and the node stays idempotent across a resume.
+    escalation_decided: bool
+    escalation_revise: bool
     # Worker diagnostics and candidates, as state rather than a dict the nodes
     # passed around. Reducers because a round can append from several specialists
     # (and, under the supervisor, from several threads) -- item 2.2 of
@@ -243,7 +252,13 @@ def _escalation_detail(overrun_pct: float, unresolved: bool, stalled: bool, max_
 
 
 def _build_hitl(
-    brief: TripBrief, overrun_pct: float, unresolved: bool, stalled: bool, max_rounds: int
+    brief: TripBrief,
+    overrun_pct: float,
+    unresolved: bool,
+    stalled: bool,
+    max_rounds: int,
+    *,
+    decided: bool = False,
 ) -> list[HitlCheckpoint]:
     items = [
         HitlCheckpoint(
@@ -264,7 +279,9 @@ def _build_hitl(
                 type="escalation",
                 title="Needs a human decision",
                 detail=_escalation_detail(overrun_pct, unresolved, stalled, max_rounds),
-                status="pending",
+                # Answered by the traveller at the pause, so it stops asking. The
+                # overrun itself is still on the budget bar either way.
+                status="approved" if decided else "pending",
             )
         )
     return items
@@ -311,6 +328,67 @@ def _run_context(options: OrchestratorOptions | None) -> TripRun:
         decisions=options.decisions or {},
         deterministic=options.specialists is not None,
     )
+
+
+def _escalation_payload(state: State, rounds_left: bool) -> dict[str, Any]:
+    """What the pause shows, and the answers it offers.
+
+    Only the options that can actually be carried out are offered: "revise" needs a
+    round to spend, and once the limit is reached the only honest answer is to keep
+    the plan and see the overrun.
+    """
+    plan = state["plan"]
+    return {
+        "kind": "escalation",
+        "title": "This needs your call",
+        "detail": plan.brief.destination
+        + f" · {plan.overrunPct:+.2f}% against budget"
+        + (" · conflicts unresolved" if state["conflicts"] else ""),
+        "overrunPct": plan.overrunPct,
+        "options": [
+            {"value": "accept", "label": "Keep this plan as it is"},
+            *(
+                [
+                    {
+                        "value": "revise",
+                        "label": "Send the costliest sections back for one more round",
+                    }
+                ]
+                if rounds_left
+                else []
+            ),
+        ],
+    }
+
+
+# One checkpointer for the process. A thread is deleted as soon as a run finishes
+# without pausing, so this stays bounded; a paused run keeps its thread until the
+# traveller answers.
+#
+# The contract types are listed explicitly rather than relying on the permissive
+# default: langgraph warns on every unregistered type it deserializes and will
+# block them in a future version. This is also the honest list of what crosses a
+# checkpoint boundary.
+_CHECKPOINTER = InMemorySaver(
+    serde=JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            AgentProposal,
+            ChoiceOption,
+            HitlCheckpoint,
+            NegotiationRound,
+            ProposalItem,
+            RevisionRequest,
+            SpecialistTrace,
+            TripBrief,
+            TripPlan,
+            TripSection,
+        ]
+    )
+)
+
+
+def _thread_config(thread_id: str) -> dict[str, Any]:
+    return {"configurable": {"thread_id": thread_id}}
 
 
 def _agent_context(
@@ -531,6 +609,8 @@ def create_orchestrator_graph():
             "proposals": proposals,
             "negotiation": history,
             "stalled": stalled,
+            # Consumed: the traveller is asked at most once per run.
+            "escalation_revise": False,
             **reported,
         }
 
@@ -567,6 +647,7 @@ def create_orchestrator_graph():
                         unresolved,
                         state.get("stalled", False),
                         state["max_rounds"],
+                        decided=state.get("escalation_decided", False),
                     ),
                     *_choice_checkpoints(state.get("stay_choices", {}), run.decisions),
                 ],
@@ -574,6 +655,56 @@ def create_orchestrator_graph():
                 traces=state.get("traces", []),
             )
         }
+
+    def await_decision(state: State, runtime: Runtime[TripRun]) -> State:
+        """Pause where the plan already says a human must decide (item 3.2).
+
+        Runs after `build_plan`, so the traveller answers with the plan in front of
+        them. The answer arrives as `interrupt()`'s return value: accept leaves the
+        plan as it is, revise sends the conflicts already detected back to their
+        owners -- one or two specialists, not five.
+
+        Idempotent across a resume, because `interrupt` re-executes its node from the
+        top. Bounded, because "revise" is only offered while the round limit has room
+        and is consumed once: the escalation is answered at most once per run.
+        """
+        plan = state.get("plan")
+        if plan is None or state.get("escalation_decided"):
+            return {}
+        escalating = plan.overrunPct > ESCALATION_OVERRUN_PCT or bool(state["conflicts"])
+        if not escalating:
+            return {}
+
+        # A revision is offered only when it could still help. By construction the
+        # pause is reached only when it cannot: the route here means no conflicts
+        # remain, the round limit is spent, or the negotiation stalled (a revision
+        # that moved no money). Offering "revise" at that point would be a button
+        # that does nothing, so the honest answer set is to keep the plan and to know
+        # why it is over.
+        rounds_left = (
+            state["round"] < state["max_rounds"]
+            and bool(state["conflicts"])
+            and not state.get("stalled")
+        )
+        answer = interrupt(_escalation_payload(state, rounds_left))
+        if answer == "revise" and rounds_left:
+            return {"escalation_decided": True, "escalation_revise": True}
+        # Accepted: mark it here rather than rebuilding, so the plan the traveller
+        # was looking at is the plan that becomes final.
+        answered = plan.model_copy(
+            update={
+                "hitl": [
+                    checkpoint.model_copy(update={"status": "approved"})
+                    if checkpoint.type == "escalation"
+                    else checkpoint
+                    for checkpoint in plan.hitl
+                ]
+            }
+        )
+        return {"escalation_decided": True, "escalation_revise": False, "plan": answered}
+
+    def route_after_decision(state: State) -> str:
+        return "revise_conflicts" if state.get("escalation_revise") else END
 
     def route_after_detection(state: State) -> str:
         if not state["conflicts"] or state["round"] >= state["max_rounds"]:
@@ -587,14 +718,18 @@ def create_orchestrator_graph():
     graph.add_node("detect_conflicts", detect)
     graph.add_node("revise_conflicts", revise)
     graph.add_node("build_plan", build_plan)
+    graph.add_node("await_decision", await_decision)
     graph.add_edge(START, "dispatch_specialists")
     graph.add_edge("dispatch_specialists", "detect_conflicts")
     graph.add_conditional_edges(
         "detect_conflicts", route_after_detection, ["revise_conflicts", "build_plan"]
     )
     graph.add_edge("revise_conflicts", "detect_conflicts")
-    graph.add_edge("build_plan", END)
-    return graph.compile()
+    # The pause comes after the plan is built, so the decision is made with the plan
+    # in front of the traveller rather than blind.
+    graph.add_edge("build_plan", "await_decision")
+    graph.add_conditional_edges("await_decision", route_after_decision, ["revise_conflicts", END])
+    return graph.compile(checkpointer=_CHECKPOINTER)
 
 
 # One compile for the process: nothing about a run is captured in the graph, so
@@ -613,11 +748,17 @@ def _checked_brief(brief: TripBrief) -> None:
 def run_orchestrator(brief: TripBrief, options: OrchestratorOptions | None = None) -> TripPlan:
     """Plan a brief, discarding progress.
 
-    The programmatic path: chat, decisions and tests call this. A caller that
-    wants to watch the specialists work iterates `run_orchestrator_stream`.
+    The programmatic path: chat, decisions and tests call this. A caller that wants
+    to watch the specialists work iterates `run_orchestrator_stream`. A run that
+    reaches an escalation cannot be answered here -- use the stream, which exposes
+    the pause and can resume it.
     """
     _checked_brief(brief)
-    result = _GRAPH.invoke({"brief": brief}, context=_run_context(options))
+    thread_id = _new_thread_id(brief)
+    result = _GRAPH.invoke(
+        {"brief": brief}, context=_run_context(options), config=_thread_config(thread_id)
+    )
+    _CHECKPOINTER.delete_thread(thread_id)
     plan = result.get("plan")
     if plan is None:
         raise RuntimeError("The orchestrator graph finished without a trip plan.")
@@ -627,22 +768,36 @@ def run_orchestrator(brief: TripBrief, options: OrchestratorOptions | None = Non
 class PlanStream:
     """One planning run as progress events, and the plan it produced.
 
-    A run is a single pass, so the plan cannot be the generator's return value
-    and still be readable by the caller that is consuming the events: iterate the
-    stream, then read `plan`. `plan` is None until the iterator is exhausted, and
-    the stream can only be consumed once.
+    A run is a single pass, so the plan cannot be the generator's return value and
+    still be readable by the caller that is consuming the events: iterate the
+    stream, then read `plan`. Both are None until the iterator is exhausted, and the
+    stream can only be consumed once.
+
+    `interrupt` is set when the run paused for a human. The thread is kept so
+    `resume` can continue it; a run that did not pause has its checkpoint dropped,
+    which is what keeps the in-process saver bounded.
 
     The generator body runs on the consumer's thread, which is the point: the
-    specialists report through the graph's custom stream (and, under the
-    supervisor, from a thread pool), so a consumer never has to know which thread
-    a specialist ran on. `ui/live.py` existed to patch exactly that, and is gone.
+    specialists report through the graph's custom stream (and, under the supervisor,
+    from a thread pool), so a consumer never has to know which thread a specialist
+    ran on. `ui/live.py` existed to patch exactly that, and is gone.
     """
 
-    def __init__(self, brief: TripBrief, run: TripRun) -> None:
+    def __init__(
+        self,
+        brief: TripBrief,
+        run: TripRun,
+        *,
+        resume: Any = None,
+        thread_id: str | None = None,
+    ) -> None:
         self._brief = brief
         self._run = run
+        self._resume = resume
+        self.thread_id = thread_id or _new_thread_id(brief)
         self._consumed = False
         self.plan: TripPlan | None = None
+        self.interrupt: dict[str, Any] | None = None
 
     def __iter__(self) -> Iterator[ProgressEvent]:
         if self._consumed:
@@ -651,20 +806,55 @@ class PlanStream:
             raise RuntimeError("A PlanStream drives one run and can only be consumed once.")
         self._consumed = True
 
+        starting = (
+            Command(resume=self._resume) if self._resume is not None else {"brief": self._brief}
+        )
         for mode, payload in _GRAPH.stream(
-            {"brief": self._brief},
+            starting,
             context=self._run,
+            config=_thread_config(self.thread_id),
             stream_mode=["updates", "custom"],
         ):
             if mode == "custom":
                 yield payload
-            elif isinstance(payload, dict) and "plan" in payload.get("build_plan", {}):
-                self.plan = payload["build_plan"]["plan"]
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if "__interrupt__" in payload:
+                self.interrupt = payload["__interrupt__"][0].value
+                continue
+            # Any node may publish the plan: `build_plan` builds it, and
+            # `await_decision` publishes the answered copy on the way out.
+            for update in payload.values():
+                if isinstance(update, dict) and "plan" in update:
+                    self.plan = update["plan"]
+
+        if self.interrupt is None:
+            # Nothing to resume, so the checkpoint is only memory. A paused run keeps
+            # its thread until the traveller answers.
+            _CHECKPOINTER.delete_thread(self.thread_id)
+
+
+def _new_thread_id(brief: TripBrief) -> str:
+    """A fresh thread per run.
+
+    The checkpointer accumulates state per thread, and the reducer channels
+    (`traces`, `stay_choices`) would otherwise carry a previous run's entries into
+    the next one on the same trip.
+    """
+    return f"{brief.tripId}-{uuid4().hex[:12]}"
 
 
 def run_orchestrator_stream(
-    brief: TripBrief, options: OrchestratorOptions | None = None
+    brief: TripBrief,
+    options: OrchestratorOptions | None = None,
+    *,
+    resume: Any = None,
+    thread_id: str | None = None,
 ) -> PlanStream:
-    """Plan a brief, reporting each specialist as it starts, finishes or fails."""
+    """Plan a brief, reporting each specialist as it starts, finishes or fails.
+
+    Pass `resume` with the paused run's `thread_id` to answer an escalation.
+    """
     _checked_brief(brief)
-    return PlanStream(brief, _run_context(options))
+    return PlanStream(brief, _run_context(options), resume=resume, thread_id=thread_id)

@@ -89,6 +89,7 @@ st.session_state.setdefault("plan", None)
 st.session_state.setdefault("brief", DEMO_BRIEF)
 st.session_state.setdefault("messages", [])
 st.session_state.setdefault("trip_id", "trip-demo")
+st.session_state.setdefault("pending_escalation", None)
 
 
 # --------------------------------------------------------------------------
@@ -258,6 +259,32 @@ def render_decisions(plan: TripPlan) -> None:
                 st.rerun()
 
 
+def render_escalation() -> None:
+    """The answer to a paused run.
+
+    An escalation that cannot be acted on is only worth showing if it can be
+    answered, so the buttons resume the paused thread with the traveller's call
+    instead of leaving the warning to repeat every turn.
+    """
+    paused = st.session_state.get("pending_escalation")
+    if not paused:
+        return
+    for option in paused["options"]:
+        if st.button(
+            option["label"],
+            key=f"escalation-{option['value']}",
+            type="primary",
+            use_container_width=True,
+        ):
+            # `plan_trip` reads the paused thread id from session state and clears
+            # it after the resume, so it must not be cleared here: otherwise the
+            # answer would be sent to a fresh thread, and the run would simply pause
+            # again.
+            with st.spinner("Recording your call…"):
+                plan_trip(option["label"], st.session_state.brief, decision=option["value"])
+            st.rerun()
+
+
 def render_reasoning(plan: TripPlan) -> None:
     """One expander per specialist: what it read, and which path it took.
 
@@ -300,6 +327,8 @@ def render_plan(plan: TripPlan) -> None:
     for checkpoint in (h for h in plan.hitl if h.status == "pending"):
         shout = st.warning if checkpoint.type == "escalation" else st.info
         shout(f"**{checkpoint.title}** — {checkpoint.detail}")
+
+    render_escalation()
 
     steps_tab, day_tab, detail_tab, talks_tab = st.tabs(
         ["Steps", "Day by day", "By specialist", "Negotiation"]
@@ -348,9 +377,14 @@ def render_plan(plan: TripPlan) -> None:
     )
 
 
-def plan_trip(message: str, brief: TripBrief | None) -> None:
-    """Run one turn and stream per-agent progress while it runs."""
+def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None) -> None:
+    """Run one turn and stream per-agent progress while it runs.
+
+    `decision` resumes a run that paused for an escalation: the paused thread id is
+    in session state, and the traveller's answer is the graph's resume value.
+    """
     st.session_state.messages.append({"role": "user", "content": message})
+    paused = st.session_state.get("pending_escalation")
 
     with chat_column:
         st.markdown("**Agent activity**")
@@ -367,6 +401,8 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
                 stream = run_trip_chat_stream(
                     ChatRequest(tripId=st.session_state.trip_id, message=message, brief=brief),
                     OrchestratorOptions(),
+                    resume=decision,
+                    thread_id=paused["threadId"] if decision and paused else None,
                 )
                 for event in stream:
                     state[event.agent] = event.type
@@ -385,6 +421,13 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
                 {"role": "assistant", "content": "Planning failed: the run produced no plan."}
             )
             return
+
+        # A run that escalated paused for a human. Keep the thread and what the pause
+        # offers, so the buttons below can resume it; a run that did not pause has
+        # nothing to answer.
+        st.session_state.pending_escalation = (
+            {"threadId": stream.thread_id, **stream.interrupt} if stream.interrupt else None
+        )
 
     st.session_state.plan = response.plan
     st.session_state.brief = response.plan.brief
