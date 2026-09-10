@@ -77,9 +77,9 @@ def test_a_transient_model_failure_is_retried_rather_than_fallen_back(scripted, 
         ]
     )
 
-    proposals = dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, progress)
+    outcome = dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, progress)
 
-    assert [p.agent for p in proposals] == ["itinerary"]
+    assert [p.agent for p in outcome.proposals] == ["itinerary"]
     # One failure, then the run continued: the retry cost a call, not the plan.
     assert model.index == 3
 
@@ -115,9 +115,9 @@ def test_a_failing_specialist_does_not_take_the_others_with_it(scripted, ctx):
         ]
     )
 
-    proposals = dispatch_with_supervisor(specialists, DEMO_BRIEF, ctx, progress)
+    outcome = dispatch_with_supervisor(specialists, DEMO_BRIEF, ctx, progress)
 
-    assert [p.agent for p in proposals] == ["itinerary"]  # the batch survived
+    assert [p.agent for p in outcome.proposals] == ["itinerary"]  # the batch survived
     delivered = [m for m in model.seen[1] if m.type == "tool"]
     failure = next(m for m in delivered if m.status == "error")
     assert "ValueError" in failure.content  # the model is told what happened
@@ -129,9 +129,9 @@ def test_the_supervisor_loop_is_bounded(scripted, ctx):
     recursion limit that used to be the only bound."""
     model = scripted([tool_call("ask_itinerary_specialist")])
 
-    proposals = dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, progress)
+    outcome = dispatch_with_supervisor(ALL_SPECIALISTS, DEMO_BRIEF, ctx, progress)
 
-    assert proposals
+    assert outcome.proposals
     assert model.index == MODEL_CALL_LIMIT
 
 

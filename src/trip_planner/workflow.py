@@ -16,9 +16,10 @@ budget overrun oscillated 29.25% -> 16.50% -> 25.25% without ever settling.
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Iterator
-from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from dataclasses import dataclass
+from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -40,10 +41,12 @@ from .contracts import (
     NegotiationRound,
     ProgressEvent,
     RevisionRequest,
+    SpecialistTrace,
     TripBrief,
     TripPlan,
     TripSection,
     brief_problem,
+    merge_choices,
 )
 from .memory import memory as default_memory
 from .ports import AgentContext, ToolGateway
@@ -84,6 +87,12 @@ class State(TypedDict, total=False):
     negotiation: list[NegotiationRound]
     stalled: bool
     plan: TripPlan
+    # Worker diagnostics and candidates, as state rather than a dict the nodes
+    # passed around. Reducers because a round can append from several specialists
+    # (and, under the supervisor, from several threads) -- item 2.2 of
+    # docs/framework-alignment.md.
+    traces: Annotated[list[SpecialistTrace], operator.add]
+    stay_choices: Annotated[dict[str, list[ChoiceOption]], merge_choices]
 
 
 def _minutes(hhmm: str) -> int:
@@ -280,9 +289,6 @@ class TripRun:
     # deterministic seam a test uses, so it never depends on a model choosing to
     # call every tool.
     deterministic: bool
-    # Per-run scratch: the candidates a specialist weighed up and the traces it
-    # reported, read once when the plan is assembled.
-    extras: dict[str, Any] = field(default_factory=dict)
 
 
 def _run_context(options: OrchestratorOptions | None) -> TripRun:
@@ -306,9 +312,17 @@ def _run_context(options: OrchestratorOptions | None) -> TripRun:
     )
 
 
-def _agent_context(run: TripRun, brief: TripBrief, round_no: int) -> AgentContext:
+def _agent_context(
+    run: TripRun, brief: TripBrief, round_no: int, extras: dict[str, Any]
+) -> AgentContext:
+    """A context for one specialist invocation.
+
+    `extras` is fresh per invocation, so what a specialist reports back is exactly
+    what it produced: the caller turns that into state, instead of diffing a
+    run-long accumulator.
+    """
     return AgentContext(
-        tripId=brief.tripId, round=round_no, tools=run.tools, mem=run.mem, extras=run.extras
+        tripId=brief.tripId, round=round_no, tools=run.tools, mem=run.mem, extras=extras
     )
 
 
@@ -329,47 +343,83 @@ def create_orchestrator_graph():
     compiled graph serves every trip (see `_GRAPH`).
     """
 
-    def run_one(run: TripRun, specialist, brief, round_no, revision=None) -> AgentProposal:
+    def run_one(run: TripRun, specialist, brief, round_no, revision=None):
+        """Run one specialist: its proposal, and what it reported.
+
+        The second half is what the specialist wrote to its context's `extras` --
+        fresh per call, so it is exactly this specialist's diagnostics and
+        candidates, ready to become state.
+        """
+        produced: dict[str, Any] = {}
         _write_progress(ProgressEvent("agent_started", specialist.name, round_no))
         try:
-            proposal = specialist.invoke(brief, _agent_context(run, brief, round_no), revision)
+            proposal = specialist.invoke(
+                brief, _agent_context(run, brief, round_no, produced), revision
+            )
             _write_progress(ProgressEvent("agent_completed", specialist.name, round_no))
-            return proposal
+            return proposal, produced
         except Exception as error:
             _write_progress(ProgressEvent("agent_failed", specialist.name, round_no, str(error)))
             raise
 
-    def deterministic_dispatch(run: TripRun, brief: TripBrief) -> list[AgentProposal]:
-        return [run_one(run, s, brief, 1) for s in run.specialists]
+    def collect(reported: list[dict[str, Any]]) -> dict[str, Any]:
+        """Fold per-specialist reports into one state update."""
+        traces: list[SpecialistTrace] = []
+        choices: dict[str, list[ChoiceOption]] = {}
+        for produced in reported:
+            traces += produced.get("traces", [])
+            choices = {**choices, **produced.get("stay_choices", {})}
+        return {"traces": traces, "stay_choices": choices}
+
+    def deterministic_dispatch(run: TripRun, brief: TripBrief) -> tuple[list, dict[str, Any]]:
+        results = [run_one(run, s, brief, 1) for s in run.specialists]
+        return [proposal for proposal, _ in results], collect([p for _, p in results])
 
     def dispatch(state: State, runtime: Runtime[TripRun]) -> State:
         run = runtime.context
         brief = state["brief"]
         if run.deterministic:
+            proposals, reported = deterministic_dispatch(run, brief)
             return {
                 "round": 1,
                 "max_rounds": run.max_rounds,
-                "proposals": deterministic_dispatch(run, brief),
+                "proposals": proposals,
+                **reported,
             }
         try:
             # The delegation tools emit on the nested agent's custom stream, which
             # `dispatch_with_supervisor` forwards here; the tools themselves run on
             # a thread pool, so this is the hop that keeps the writes on our thread.
-            proposals = dispatch_with_supervisor(
-                run.specialists, brief, _agent_context(run, brief, 1), _write_progress
+            # What they produced comes back as the nested agent's state, which is
+            # why the result is an outcome and not just a list of proposals.
+            outcome = dispatch_with_supervisor(
+                run.specialists, brief, _agent_context(run, brief, 1, {}), _write_progress
             )
+            proposals = outcome.proposals
+            reported: dict[str, Any] = {
+                "traces": outcome.traces,
+                "stay_choices": outcome.stay_choices,
+            }
             # The supervisor may legitimately skip a specialist. Fill the gaps so
             # the plan always has all five sections rather than silently losing one.
             missing = [s for s in run.specialists if s.name not in {p.agent for p in proposals}]
             if missing:
                 by_agent = {p.agent: p for p in proposals}
+                backfilled = []
                 for specialist in missing:
-                    by_agent[specialist.name] = run_one(run, specialist, brief, 1)
+                    proposal, produced = run_one(run, specialist, brief, 1)
+                    by_agent[specialist.name] = proposal
+                    backfilled.append(produced)
                 proposals = [by_agent[s.name] for s in run.specialists]
+                filled = collect(backfilled)
+                reported = {
+                    "traces": [*reported["traces"], *filled["traces"]],
+                    "stay_choices": {**reported["stay_choices"], **filled["stay_choices"]},
+                }
         except Exception as error:  # noqa: BLE001
             print(f"[supervisor] Delegation unavailable; using deterministic dispatch: {error}")
-            proposals = deterministic_dispatch(run, brief)
-        return {"round": 1, "max_rounds": run.max_rounds, "proposals": proposals}
+            proposals, reported = deterministic_dispatch(run, brief)
+        return {"round": 1, "max_rounds": run.max_rounds, "proposals": proposals, **reported}
 
     def detect(state: State) -> State:
         conflicts = detect_conflicts(state["proposals"], state["brief"])
@@ -384,16 +434,19 @@ def create_orchestrator_graph():
         requests = state["conflicts"]
         by_agent = {c.targetAgent: c for c in requests}
 
-        def deterministic_revision() -> list[AgentProposal]:
+        def deterministic_revision() -> tuple[list[AgentProposal], dict[str, Any]]:
             out: list[AgentProposal] = []
+            reported: list[dict[str, Any]] = []
             for proposal in state["proposals"]:
                 request = by_agent.get(proposal.agent)
                 specialist = run.by_name.get(proposal.agent)
                 if request is None or specialist is None:
                     out.append(proposal)
                     continue
-                out.append(run_one(run, specialist, brief, round_no, request))
-            return out
+                revised, produced = run_one(run, specialist, brief, round_no, request)
+                out.append(revised)
+                reported.append(produced)
+            return out, collect(reported)
 
         history = list(state.get("negotiation", []))
         if history:
@@ -402,23 +455,25 @@ def create_orchestrator_graph():
             )
 
         if run.deterministic:
-            proposals = deterministic_revision()
+            proposals, reported = deterministic_revision()
         else:
             try:
-                proposals = revise_with_supervisor(
+                outcome = revise_with_supervisor(
                     run.specialists,
                     state["proposals"],
                     requests,
                     brief,
-                    _agent_context(run, brief, round_no),
+                    _agent_context(run, brief, round_no, {}),
                     _write_progress,
                 )
+                proposals = outcome.proposals
+                reported = {"traces": outcome.traces, "stay_choices": outcome.stay_choices}
             except Exception as error:  # noqa: BLE001
                 print(
                     "[supervisor] Revision delegation unavailable; using deterministic "
                     f"routing: {error}"
                 )
-                proposals = deterministic_revision()
+                proposals, reported = deterministic_revision()
 
         # A revision that moved no money for any specialist it targeted has
         # nothing further to give. Re-asking would spend the remaining rounds
@@ -437,6 +492,7 @@ def create_orchestrator_graph():
             "proposals": proposals,
             "negotiation": history,
             "stalled": stalled,
+            **reported,
         }
 
     def build_plan(state: State, runtime: Runtime[TripRun]) -> State:
@@ -473,10 +529,10 @@ def create_orchestrator_graph():
                         state.get("stalled", False),
                         state["max_rounds"],
                     ),
-                    *_choice_checkpoints(run.extras.get("stay_choices", {}), run.decisions),
+                    *_choice_checkpoints(state.get("stay_choices", {}), run.decisions),
                 ],
                 negotiation=state.get("negotiation", []),
-                traces=list(run.extras.get("traces", [])),
+                traces=state.get("traces", []),
             )
         }
 
