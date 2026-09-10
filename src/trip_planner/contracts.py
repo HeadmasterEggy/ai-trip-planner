@@ -221,6 +221,10 @@ class SpecialistTrace(BaseModel):
     # Why the model path was abandoned. Present only on a fallback.
     fallbackReason: str | None = None
     notes: list[str] = Field(default_factory=list)
+    # How long this specialist's invocation took, stamped by whoever ran it. The
+    # per-section cost of a plan is otherwise invisible, and with roles routable
+    # independently (MODEL_ROUTING) it is the first question worth answering.
+    seconds: float | None = None
 
 
 class NegotiationRound(BaseModel):

@@ -17,7 +17,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, UserPreference
-from ..models import create_structured_invoker
+from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, is_budget_revision, record_trace, trip_days
 
@@ -156,6 +156,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             "daily ceiling": f"USD {ceiling:,.2f} per person",
             "dietary preferences": ", ".join(f"{p.key}={p.value}" for p in dietary)
             or "none recorded",
+            "route": describe_route("dining"),
         },
         revision=revision,
         fallback_reason=fallback_reason,

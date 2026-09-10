@@ -341,9 +341,16 @@ def trace_block(traces: list, agent: str) -> str:
             else ""
         )
         notes = "".join(f'<p class="tp-note">{_esc(n)}</p>' for n in entry.notes)
+        # `is not None`, not truthiness: a deterministic section can be fast enough to
+        # round to 0.00s, and hiding that looks like missing data.
+        took = (
+            f'<span class="tp-note">· {entry.seconds:.2f}s</span>'
+            if entry.seconds is not None
+            else ""
+        )
         blocks.append(
             f'<div class="tp-trace"><div class="tp-trace__head">Round {entry.round}'
-            f'<span class="tp-src {tone}">{_esc(entry.source)}</span></div>'
+            f'{took}<span class="tp-src {tone}">{_esc(entry.source)}</span></div>'
             f"{revision}{rows}{fallback}{notes}</div>"
         )
     return "".join(blocks)

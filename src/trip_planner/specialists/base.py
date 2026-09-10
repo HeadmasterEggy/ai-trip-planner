@@ -67,6 +67,16 @@ def is_schedule_revision(revision: RevisionRequest | None) -> bool:
     return any(word in text for word in ("time", "overlap", "schedule"))
 
 
+def stamp_duration(produced: dict[str, object], seconds: float) -> None:
+    """Record how long an invocation took, on every trace it reported.
+
+    The specialist knows what it did, the caller knows how long it took, and neither
+    has to guess about the other -- so the caller stamps what it measured.
+    """
+    for trace in produced.get("traces", []) or []:
+        trace.seconds = seconds  # type: ignore[attr-defined]
+
+
 def record_trace(
     ctx: AgentContext,
     agent: str,

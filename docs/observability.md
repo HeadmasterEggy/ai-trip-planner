@@ -53,6 +53,13 @@ specialist needs to know anything about the UI, or about which thread it was run
 cheapest way to see round structure in a script: an event with `round=3` means that specialist was
 sent back twice.
 
+## What a section cost
+
+Each trace records how long its specialist took (`seconds`, stamped by whoever ran it) and which route
+would answer it (`route` in the evidence, from `models.describe_route`). Both are cheap, and together
+they answer the first question a slow or wrong section raises: was this the model, which one, and how
+long did it take. `unconfigured` is a real value there — it means the deterministic fallback answered.
+
 ## What a non-converging run looks like
 
 The demo brief currently runs the full three rounds and escalates. In the trace, this shows up as
