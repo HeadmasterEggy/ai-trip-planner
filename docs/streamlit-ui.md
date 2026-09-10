@@ -49,6 +49,16 @@ to the worker thread (`ui/live.py`); that is gone, because streaming removes the
 specialists publish, and only the consumer's thread touches a widget. `tests/test_supervisor_streaming.py`
 pins both halves, including that no module under `trip_planner/` imports Streamlit.
 
+## Whose session is it
+
+Each session derives its own `trip_id` and `user_id` (`_SESSION` in the entry point) and puts them on
+the brief. That matters because the memory store and the checkpointer are process-wide and key by
+those ids and nothing else: the ids used to be a fixed `trip-demo`/`demo-user` pair, which meant that
+on a shared deployment one traveller's confirmed stay could appear in the next one's plan.
+
+Both stores are bounded as well — the memory store evicts its oldest trip and user at a cap, and a
+paused run's checkpoint is dropped when the pause is answered or superseded.
+
 ## Three views of one plan
 
 The plan is stored per specialist, but nobody reads it that way. Two of the

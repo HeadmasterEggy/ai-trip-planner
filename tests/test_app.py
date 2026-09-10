@@ -69,3 +69,20 @@ def test_an_escalation_pauses_and_the_button_resumes_it(offline):
     assert escalation.status == "approved"
     # Both sides of the resumed turn are in the transcript, and no more.
     assert len(at.session_state["messages"]) == 4
+
+
+def test_each_session_gets_its_own_identity(offline):
+    """Two visitors must not share memory buckets.
+
+    The ids used to be a fixed `trip-demo`/`demo-user` pair, so on a shared
+    deployment one traveller's confirmed stay would show up in the next one's plan:
+    the memory store keys by these ids and nothing else separates sessions.
+    """
+    first = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
+    second = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
+
+    assert first.session_state["user_id"] != second.session_state["user_id"]
+    assert first.session_state["trip_id"] != second.session_state["trip_id"]
+    # The brief has to carry it, or the preferences would still be written under one user.
+    assert first.session_state["brief"].userId == first.session_state["user_id"]
+    assert second.session_state["brief"].userId == second.session_state["user_id"]
