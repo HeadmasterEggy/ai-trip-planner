@@ -17,8 +17,15 @@ from trip_planner.supervisor import (
 )
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
-from trip_planner.ui.render import agent_row, budget_block, chip, item_card, proposal_items
-from trip_planner.workflow import run_orchestrator
+from trip_planner.ui.render import (
+    agent_row,
+    budget_block,
+    chip,
+    item_card,
+    plan_markdown,
+    proposal_items,
+)
+from trip_planner.workflow import OrchestratorOptions, run_orchestrator
 
 
 @pytest.fixture
@@ -158,3 +165,21 @@ def test_plan_stays_valid_after_render_round_trip():
     assert isinstance(plan, TripPlan)
     for section in plan.sections:
         proposal_items(section.proposal)  # must not raise on any real proposal
+
+
+def test_the_exported_plan_is_the_document_that_was_reviewed():
+    """Assumptions, pending decisions and the negotiation were on screen and not in
+    the file, so the export was a different document from the one being read."""
+    plan = run_orchestrator(DEMO_BRIEF, OrchestratorOptions(specialists=ALL_SPECIALISTS))
+    markdown = plan_markdown(plan)
+
+    assert "## Needs your decision" in markdown or not [
+        h for h in plan.hitl if h.status == "pending"
+    ]
+    for section in plan.sections:
+        for note in section.proposal.assumptions if section.proposal else []:
+            assert note in markdown
+    assert "*How:" in markdown  # which path answered, and how long it took
+    for entry in plan.negotiation:
+        for request in entry.conflicts:
+            assert request.reason in markdown

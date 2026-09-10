@@ -64,8 +64,9 @@ paused run's checkpoint is dropped when the pause is answered or superseded.
 The plan is stored per specialist, but nobody reads it that way. Two of the
 three tabs reassemble it.
 
-**Day by day** puts every timed item from every specialist on one axis, coloured
-by owner. A transport leg and an activity only look like a clash when they share
+**Day by day** puts every timed item from every specialist on one axis, labelled and
+coloured by owner: colour alone is unreadable in print and to a reader who cannot
+separate four hues. A transport leg and an activity only look like a clash when they share
 a column — which is exactly what the orchestrator's conflict detection is
 looking at, so this is the view that makes its work legible.
 
@@ -84,6 +85,14 @@ plan, so `TripPlan.negotiation` records it. It is also where a plan that never
 converged explains itself — the same conflict recurring in every round means the
 specialists involved had nothing further to give, which is a different problem
 from a plan that simply ran out of rounds.
+
+## The download
+
+`Download plan as Markdown` writes the document a traveller would act on, not just the
+sections: the pending decisions, each section's assumptions and caveats, the line saying how
+that section was produced (which path, which route, how long), and the negotiation round by
+round. Anything on screen that changes what someone should do is in the file, because an
+export that drops the caveats is a different document from the one being reviewed.
 
 ## Layout
 
