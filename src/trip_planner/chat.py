@@ -204,7 +204,7 @@ class ModelExtractor:
 
 
 def create_model_extractor() -> BriefExtractor | None:
-    model = create_routed_chat_model("itinerary")
+    model = create_routed_chat_model("brief-extraction")
     if model is None:
         return None
     structured = model.with_structured_output(_ModelPatch, method="function_calling")
@@ -290,7 +290,7 @@ def reply_prompt(
 
 
 def _create_reply_generator() -> Callable[[str], str] | None:
-    model = create_routed_chat_model("itinerary")
+    model = create_routed_chat_model("reply")
     if model is None:
         return None
 

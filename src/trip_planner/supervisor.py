@@ -21,7 +21,6 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.tools import tool
-from pydantic import BaseModel, Field
 
 from .contracts import AgentProposal, RevisionRequest, TripBrief
 from .models import create_routed_chat_model
@@ -29,7 +28,7 @@ from .ports import AgentContext
 
 DISPATCH_PROMPT = (
     "You are the trip-planning supervisor. Decide which specialist tools are needed for the "
-    "requested plan, delegate a bounded objective to each, and do not perform specialist work "
+    "requested plan, call one tool per specialist you need, and do not perform specialist work "
     "yourself. A complete new trip plan usually needs day planning, inter-city transport, "
     "accommodation, destination guidance and dining. Do not invent or modify trip facts. Stop "
     "once the necessary specialists have returned; a deterministic workflow validates and "
@@ -44,10 +43,6 @@ REVISION_PROMPT = (
 )
 
 
-class _Delegation(BaseModel):
-    objective: str = Field(description="The bounded planning objective for this specialist.")
-
-
 def _tool_name(prefix: str, agent: str) -> str:
     return f"{prefix}_{agent.replace('-', '_')}_specialist"
 
@@ -59,20 +54,27 @@ def create_supervisor_tools(
     on_proposal: Callable[[AgentProposal], None],
     on_progress: Callable[[str, str, int, str | None], None],
 ) -> list[Any]:
-    """One typed tool per specialist, bound to this run's brief and context."""
+    """One tool per specialist, bound to this run's brief and context.
+
+    The tools take no arguments on purpose, and that is the point of the module:
+    the supervisor's only freedom is *which* specialist runs. The brief, the
+    memory store and the tool gateway are captured here, and each specialist
+    derives its own prompt from the brief. An argument would be somewhere for the
+    model to restate the request, and the deterministic rules downstream would
+    then be checking the restatement rather than what the traveller asked for.
+    """
     tools = []
     for specialist in specialists:
 
         def make(specialist=specialist):
             @tool(
                 _tool_name("ask", specialist.name),
-                args_schema=_Delegation,
                 description=(
-                    f"Delegate a bounded task to the {specialist.label} specialist. "
-                    "Use this when its domain is needed for the trip plan."
+                    f"Ask the {specialist.label} specialist to plan its section of the trip. "
+                    "Use this when its domain is needed for the requested plan."
                 ),
             )
-            def delegate(objective: str) -> str:
+            def delegate() -> str:
                 on_progress("agent_started", specialist.name, ctx.round, None)
                 try:
                     proposal = specialist.invoke(brief, ctx, None)
@@ -97,7 +99,12 @@ def create_revision_tools(
     on_proposal: Callable[[AgentProposal], None],
     on_progress: Callable[[str, str, int, str | None], None],
 ) -> list[Any]:
-    """One immutable, typed tool per pending revision request."""
+    """One immutable tool per pending revision request.
+
+    Like the dispatch tools these take no arguments: the validated request is
+    captured, so the supervisor routes a constraint to its owner and cannot
+    rewrite one.
+    """
     by_name = {s.name: s for s in specialists}
     tools = []
     for request in requests:
@@ -108,13 +115,12 @@ def create_revision_tools(
         def make(specialist=specialist, request=request):
             @tool(
                 _tool_name("revise", request.targetAgent),
-                args_schema=_Delegation,
                 description=(
                     f"Send the validated conflict and constraints to the {specialist.label} "
                     "specialist. The request is immutable and already targets this specialist."
                 ),
             )
-            def delegate(objective: str) -> str:
+            def delegate() -> str:
                 on_progress("agent_started", specialist.name, ctx.round, None)
                 try:
                     proposal = specialist.invoke(brief, ctx, request)
@@ -146,7 +152,7 @@ def dispatch_with_supervisor(
     Raises when no model is configured or the supervisor delegates to nobody,
     so the caller can fall back to deterministic dispatch.
     """
-    model = create_routed_chat_model("itinerary")
+    model = create_routed_chat_model("supervisor")
     if model is None:
         raise RuntimeError("Supervisor requires a configured routed chat model.")
 
@@ -183,7 +189,7 @@ def revise_with_supervisor(
     on_progress: Callable[[str, str, int, str | None], None],
 ) -> list[AgentProposal]:
     """Route validated revision requests through a named supervisor tool loop."""
-    model = create_routed_chat_model("itinerary")
+    model = create_routed_chat_model("supervisor")
     if model is None:
         raise RuntimeError("Revision supervisor requires a configured routed chat model.")
 

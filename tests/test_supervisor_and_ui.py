@@ -52,9 +52,31 @@ def test_a_delegation_tool_runs_its_specialist_and_reports_progress(ctx):
         ALL_SPECIALISTS, DEMO_BRIEF, ctx, seen.append, lambda *a: events.append(a)
     )
     transport = next(t for t in tools if t.name == "ask_transport_specialist")
-    transport.invoke({"objective": "plan the legs"})
+    transport.invoke({})
     assert [p.agent for p in seen] == ["transport"]
     assert [e[0] for e in events] == ["agent_started", "agent_completed"]
+
+
+def test_the_delegation_tools_take_no_arguments(ctx):
+    """The supervisor chooses *who*, never *what*.
+
+    A tool argument would be somewhere for the model to restate the request, and
+    the deterministic rules downstream would then be checking the restatement
+    rather than the brief. An empty schema is the constraint, not an oversight.
+    """
+    request = RevisionRequest(
+        tripId="t1", targetAgent="transport", reason="over budget", constraints=["cut 30%"]
+    )
+    tools = create_supervisor_tools(
+        ALL_SPECIALISTS, DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
+    ) + create_revision_tools(
+        ALL_SPECIALISTS, [request], DEMO_BRIEF, ctx, lambda p: None, lambda *a: None
+    )
+
+    assert tools
+    for entry in tools:
+        assert entry.args == {}, entry.name
+        assert entry.tool_call_schema.model_json_schema().get("properties", {}) == {}, entry.name
 
 
 def test_revision_tools_are_built_only_for_pending_requests(ctx):
