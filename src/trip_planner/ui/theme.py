@@ -141,11 +141,12 @@ CSS = """
 
 /* The opening screen. Before anything is planned there is no plan to put beside
    the conversation, so this is the whole page: a greeting, and the invitation to
-   say where. Centred and given vertical room, because an app that opens on an
-   empty form has already asked the traveller to do the work. */
+   say where. Centred vertically as well as horizontally, because the greeting is
+   what the traveller should be looking at, not the top of an empty panel. An app
+   that opens on a form has already asked the traveller to do the work. */
 .tp-hero {
   text-align: center;
-  padding: 7vh 0 20px;
+  padding: 15vh 0 20px;
 }
 .tp-hero__mark { font-size: 42px; line-height: 1; }
 .tp-hero__title {
