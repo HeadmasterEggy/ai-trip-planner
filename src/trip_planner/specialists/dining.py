@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, UserPreference
 from ..models import create_structured_invoker
 from ..ports import AgentContext, Place
-from .base import FunctionSpecialist, is_budget_revision, trip_days
+from .base import FunctionSpecialist, is_budget_revision, record_trace, trip_days
 
 # The meal envelope is capped both as a share of the trip budget and per
 # person per day, so a large budget cannot quietly become a huge food bill.
@@ -132,6 +132,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         ceiling = round(ceiling * BUDGET_REVISION_CUT, 2)
 
     source = "deterministic fallback"
+    fallback_reason: str | None = None
     invoke = create_structured_invoker("dining", DiningDraft, "DiningDraft")
     if invoke is None:
         draft = _fallback(brief, places, ceiling)
@@ -142,8 +143,23 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             )
             source = "model"
         except Exception as error:  # noqa: BLE001
+            fallback_reason = str(error)
             print(f"[dining] Model draft failed; using a safe local plan: {error}")
             draft = _fallback(brief, places, ceiling)
+
+    record_trace(
+        ctx,
+        "dining",
+        source,
+        evidence={
+            "venue candidates": ", ".join(p.name for p in places) or "none",
+            "daily ceiling": f"USD {ceiling:,.2f} per person",
+            "dietary preferences": ", ".join(f"{p.key}={p.value}" for p in dietary)
+            or "none recorded",
+        },
+        revision=revision,
+        fallback_reason=fallback_reason,
+    )
 
     envelope = round(draft.dailyBudgetPerPersonUsd * days * brief.groupSize, 2)
     items = [

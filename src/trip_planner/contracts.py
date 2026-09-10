@@ -138,6 +138,26 @@ class HitlCheckpoint(BaseModel):
     preferenceKey: str | None = None
 
 
+class SpecialistTrace(BaseModel):
+    """What one specialist read, which path it took, and why.
+
+    A plan shows what was decided; this shows how. Without it a section that
+    fell back is indistinguishable from one the model wrote, and a reader has
+    no way to tell whether a place came from the maps port or was invented.
+    """
+
+    agent: AgentName
+    round: int
+    source: Literal["model", "deterministic fallback", "calculator"]
+    # Facts the specialist was given, as short label -> value.
+    evidence: dict[str, str] = Field(default_factory=dict)
+    # The constraint it was re-planning against, if this was a revision.
+    revision: str | None = None
+    # Why the model path was abandoned. Present only on a fallback.
+    fallbackReason: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class NegotiationRound(BaseModel):
     """What one round of the negotiation found and who was asked to fix it.
 
@@ -167,6 +187,7 @@ class TripPlan(BaseModel):
     hitl: list[HitlCheckpoint]
     # Additive with a default, so an older caller keeps working.
     negotiation: list[NegotiationRound] = Field(default_factory=list)
+    traces: list[SpecialistTrace] = Field(default_factory=list)
 
 
 class ChatTurn(BaseModel):

@@ -55,6 +55,41 @@ converged explains itself — the same conflict recurring in every round means t
 specialists involved had nothing further to give, which is a different problem
 from a plan that simply ran out of rounds.
 
+## Layout
+
+The sidebar is the filter rail — Streamlit collapses it natively, which is what that rail wants:
+visible while you are adjusting the trip, out of the way while you are reading the plan. Nothing in
+it is required. Every field can simply be said to the planner instead, which is why the form no
+longer leads the page.
+
+The conversation sits in the middle and the plan to its right, so a change and its consequence are
+side by side.
+
+## Seeing how each specialist decided
+
+The plan says what was decided. Without more, a section a model wrote is indistinguishable from one
+that fell back, and there is no way to tell whether a place came from the maps port or was invented.
+
+Every specialist now reports a `SpecialistTrace` per round: the evidence it was given, which path
+it took, the constraint it was re-planning against, and — on a fallback — why the model output was
+rejected. `How the team decided` opens one panel per specialist:
+
+```
+🧠 Day plan — model
+   Round 2  [model]
+     re-planning against   time overlap on day 4: 09:00-11:30 conflicts with 09:00-11:20
+                           → on day 4 keep clear of 09:00-11:20, held by transport (Tokyo → Kyoto)
+     grounded candidates   Mock sight near Tokyo & Kyoto, Mock neighborhood near Tokyo & Kyoto
+     activity budget cap   USD 1,600.00
+```
+
+The badge distinguishes the three paths, because they carry different weight: `model` was reasoned,
+`calculator` was computed from a port and no model could have invented it, `fallback` means the
+model output was rejected and a safe local plan was used instead.
+
+Traces live on the plan rather than in the proposals: they are diagnostic, so a caller that ignores
+them still gets everything it needs and the contract stays about the trip.
+
 ## Decisions in the conversation
 
 The specialists already compare candidates internally — accommodation weighs four stays per city

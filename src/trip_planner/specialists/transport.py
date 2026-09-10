@@ -15,6 +15,7 @@ from .base import (
     clock,
     is_budget_revision,
     is_schedule_revision,
+    record_trace,
     trip_days,
 )
 
@@ -90,6 +91,23 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             assumptions.append(
                 f"Schedule revision moved the day {day} leg earlier to clear the conflict."
             )
+
+    record_trace(
+        ctx,
+        "transport",
+        "calculator",
+        evidence={
+            "origin": origin,
+            "cities": " → ".join(destinations),
+            "trip days": str(days),
+            "fares": "booking port"
+            if origin.lower() != destinations[0].lower()
+            else "no flight leg",
+            "routes": "maps port",
+        },
+        revision=revision,
+        notes=["Fares and routes come from ports; no model prices a leg."],
+    )
 
     return AgentProposal(
         agent="transport",

@@ -262,3 +262,40 @@ def step_row(number: int, title: str, detail: str, state: str) -> str:
         f'<br><span class="tp-note">{_esc(detail)}</span></span>'
         "</div>"
     )
+
+
+def trace_block(traces: list, agent: str) -> str:
+    """What one specialist read and which path it took, newest round first."""
+    mine = [t for t in traces if t.agent == agent]
+    if not mine:
+        return '<p class="tp-note">No reasoning was recorded for this specialist.</p>'
+    blocks = []
+    for entry in sorted(mine, key=lambda t: t.round, reverse=True):
+        tone = {
+            "model": "tp-src--model",
+            "calculator": "tp-src--calc",
+            "deterministic fallback": "tp-src--fallback",
+        }[entry.source]
+        rows = "".join(
+            f'<div class="tp-ev"><span class="tp-ev__k">{_esc(key)}</span>'
+            f'<span class="tp-ev__v">{_esc(value)}</span></div>'
+            for key, value in entry.evidence.items()
+        )
+        revision = (
+            f'<div class="tp-ev"><span class="tp-ev__k">re-planning against</span>'
+            f'<span class="tp-ev__v">{_esc(entry.revision)}</span></div>'
+            if entry.revision
+            else ""
+        )
+        fallback = (
+            f'<p class="tp-fallback">Model output rejected: {_esc(entry.fallbackReason)}</p>'
+            if entry.fallbackReason
+            else ""
+        )
+        notes = "".join(f'<p class="tp-note">{_esc(n)}</p>' for n in entry.notes)
+        blocks.append(
+            f'<div class="tp-trace"><div class="tp-trace__head">Round {entry.round}'
+            f'<span class="tp-src {tone}">{_esc(entry.source)}</span></div>'
+            f"{revision}{rows}{fallback}{notes}</div>"
+        )
+    return "".join(blocks)

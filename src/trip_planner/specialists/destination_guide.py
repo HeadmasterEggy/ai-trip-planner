@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief, UserPreference
 from ..models import create_structured_invoker
 from ..ports import AgentContext, Place
-from .base import FunctionSpecialist
+from .base import FunctionSpecialist, record_trace
 
 MONTHS = (
     "January",
@@ -146,6 +146,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
     preferences = ctx.mem.get_long_term(brief.userId)
 
     source = "deterministic fallback"
+    fallback_reason: str | None = None
     invoke = create_structured_invoker(
         "destination-guide", DestinationGuideDraft, "DestinationGuideDraft"
     )
@@ -156,8 +157,24 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             draft = _validate(invoke(_prompt(brief, month, grounded, preferences)), grounded)
             source = "model"
         except Exception as error:  # noqa: BLE001
+            fallback_reason = str(error)
             print(f"[destination-guide] Model draft failed; using a safe local plan: {error}")
             draft = _fallback(brief, month, grounded)
+
+    record_trace(
+        ctx,
+        "destination-guide",
+        source,
+        evidence={
+            "attraction candidates": ", ".join(p.name for p in grounded) or "none",
+            "travel month": month,
+            "passport": brief.nationality or "not stated",
+            "confirmed preferences": ", ".join(f"{p.key}={p.value}" for p in preferences)
+            or "none recorded",
+        },
+        revision=revision,
+        fallback_reason=fallback_reason,
+    )
 
     items = [
         ProposalItem(kind="attraction", detail=a.detail, location=a.name) for a in draft.attractions

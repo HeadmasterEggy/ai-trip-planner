@@ -42,6 +42,7 @@ from trip_planner.ui.render import (
     proposal_items,
     step_row,
     timeline,
+    trace_block,
 )
 from trip_planner.ui.theme import CSS
 from trip_planner.workflow import OrchestratorOptions, ProgressEvent
@@ -93,51 +94,6 @@ st.session_state.setdefault("trip_id", "trip-demo")
 # --------------------------------------------------------------------------
 # Sidebar: who is on the team, and what this deployment is actually wired to.
 # --------------------------------------------------------------------------
-with st.sidebar:
-    st.title("Planning team")
-    st.caption("A supervisor delegates to five specialists, then re-runs the ones in conflict.")
-    for specialist in ALL_SPECIALISTS:
-        st.markdown(f"**{specialist.label}** &nbsp;`{specialist.name}`", unsafe_allow_html=True)
-
-    st.divider()
-    st.caption("Model routing")
-    for task, provider in MODEL_ROUTING.items():
-        st.caption(f"`{task}` → {provider}")
-
-    keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
-    st.caption(
-        "Live models configured."
-        if keyed
-        else "No model key set — specialists use their deterministic fallbacks."
-    )
-    mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
-    st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
-    if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
-        st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
-
-    st.divider()
-    if st.button("Start a new trip", use_container_width=True):
-        st.session_state.plan = None
-        st.session_state.brief = DEMO_BRIEF
-        st.session_state.messages = []
-        st.rerun()
-
-
-st.title("✈️ AI Trip Planner")
-st.caption(
-    "Describe a trip. Five specialists negotiate it; conflicts are re-planned before you see it."
-)
-st.info(
-    "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
-    "act on with the venue or an official source before booking."
-)
-
-plan_column, chat_column = st.columns([1.15, 1], gap="large")
-
-
-# --------------------------------------------------------------------------
-# Left: the brief and the resulting plan.
-# --------------------------------------------------------------------------
 def render_brief_form() -> TripBrief | None:
     """The structured path. Chat can change the same fields conversationally."""
     brief: TripBrief = st.session_state.brief
@@ -181,6 +137,56 @@ def render_brief_form() -> TripBrief | None:
     )
 
 
+with st.sidebar:
+    # Streamlit's sidebar collapses natively, which is what a filter rail wants:
+    # visible when you are adjusting the trip, out of the way when you are
+    # reading the plan. Everything here can also just be said to the planner.
+    st.markdown("### Filters")
+    st.caption("Optional — you can say any of this to the planner instead.")
+    submitted_brief = render_brief_form()
+
+    st.divider()
+    with st.expander("Planning team", expanded=False):
+        for specialist in ALL_SPECIALISTS:
+            st.markdown(f"**{specialist.label}** &nbsp;`{specialist.name}`", unsafe_allow_html=True)
+    st.caption("Model routing")
+    for task, provider in MODEL_ROUTING.items():
+        st.caption(f"`{task}` → {provider}")
+
+    keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
+    st.caption(
+        "Live models configured."
+        if keyed
+        else "No model key set — specialists use their deterministic fallbacks."
+    )
+    mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
+    st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
+    if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
+        st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
+
+    st.divider()
+    if st.button("Start a new trip", use_container_width=True):
+        st.session_state.plan = None
+        st.session_state.brief = DEMO_BRIEF
+        st.session_state.messages = []
+        st.rerun()
+
+
+st.title("✈️ AI Trip Planner")
+st.caption(
+    "Describe a trip. Five specialists negotiate it; conflicts are re-planned before you see it."
+)
+st.info(
+    "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
+    "act on with the venue or an official source before booking."
+)
+
+chat_column, plan_column = st.columns([1, 1.1], gap="large")
+
+
+# --------------------------------------------------------------------------
+# Left: the brief and the resulting plan.
+# --------------------------------------------------------------------------
 def render_decisions(plan: TripPlan) -> None:
     """Offer the choices a specialist already weighed up.
 
@@ -229,6 +235,29 @@ def render_decisions(plan: TripPlan) -> None:
                         plan, checkpoint.id, picked, OrchestratorOptions()
                     )
                 st.rerun()
+
+
+def render_reasoning(plan: TripPlan) -> None:
+    """One expander per specialist: what it read, and which path it took.
+
+    The plan says what was decided. Without this a section written by a model is
+    indistinguishable from one that fell back, and there is no way to see
+    whether a place came from the maps port or was invented.
+    """
+    if not plan.traces:
+        return
+    st.markdown("**How each specialist decided**")
+    sources = {t.agent: t.source for t in sorted(plan.traces, key=lambda t: t.round)}
+    icons = {"model": "🧠", "calculator": "📐", "deterministic fallback": "🛟"}
+    for section in plan.sections:
+        source = sources.get(section.id, "")
+        label = f"{icons.get(source, '·')} {section.label} — {source or 'not run'}"
+        with st.expander(label, expanded=False):
+            st.markdown(trace_block(plan.traces, section.id), unsafe_allow_html=True)
+            if section.proposal and section.proposal.assumptions:
+                st.caption("Stated assumptions")
+                for note in section.proposal.assumptions:
+                    st.markdown(f"- {note}")
 
 
 def render_steps(plan: TripPlan) -> None:
@@ -352,10 +381,10 @@ def plan_trip(message: str, brief: TripBrief | None) -> None:
 
 
 with plan_column:
-    submitted_brief = render_brief_form()
     if st.session_state.plan is not None:
-        st.divider()
         render_plan(st.session_state.plan)
+    else:
+        st.caption("Your trip plan will appear here once the team has run.")
 
 
 EXAMPLES = [
@@ -372,6 +401,8 @@ with chat_column:
 
     if st.session_state.plan is not None:
         render_decisions(st.session_state.plan)
+        with st.expander("How the team decided", expanded=False):
+            render_reasoning(st.session_state.plan)
 
     if not st.session_state.messages:
         # A bare input box does not say what this accepts. Offer the shapes that

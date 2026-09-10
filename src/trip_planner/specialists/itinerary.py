@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief
 from ..models import create_structured_invoker
 from ..ports import AgentContext, Place
-from .base import FunctionSpecialist, trip_days
+from .base import FunctionSpecialist, record_trace, trip_days
 
 # Activities may claim at most this share of the trip budget, leaving room for
 # transport, stay and meals.
@@ -163,6 +163,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
     grounded = list(seen.values())
 
     source = "deterministic fallback"
+    fallback_reason: str | None = None
     invoke = create_structured_invoker("itinerary", ItineraryDraft, "ItineraryDraft")
     draft: ItineraryDraft
     if invoke is None:
@@ -171,9 +172,24 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         try:
             draft = _validate(invoke(_prompt(brief, days, grounded, revision)), days, grounded)
             source = "model"
-        except Exception as error:  # noqa: BLE001 - any model failure falls back
+        except Exception as error:  # noqa: BLE001
+            fallback_reason = str(error)
             print(f"[itinerary] Model draft failed; using a safe local plan: {error}")
             draft = _fallback(brief, days, grounded)
+
+    record_trace(
+        ctx,
+        "itinerary",
+        source,
+        evidence={
+            "grounded candidates": ", ".join(p.name for p in grounded) or "none",
+            "trip days": str(days),
+            "activity budget cap": f"USD {brief.budgetTotal * ACTIVITY_BUDGET_SHARE:,.2f}",
+            "min transfer": f"{MIN_TRANSFER_MINUTES} minutes",
+        },
+        revision=revision,
+        fallback_reason=fallback_reason,
+    )
 
     conflicts = travel_conflicts(draft, ctx)
     if revision is not None and conflicts:

@@ -172,6 +172,28 @@ CSS = """
 .tp-step__n--todo { background: var(--tp-warn-strong); color: #3a2a05; }
 .tp-step__body { flex: 1; min-width: 0; }
 
+/* Specialist reasoning: what it read, and which path it took. */
+.tp-trace {
+  border: 1px solid var(--tp-border); border-radius: var(--tp-radius-sm);
+  padding: 9px 11px; margin-bottom: 8px; font-size: 12px;
+}
+.tp-trace__head {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; margin-bottom: 6px;
+}
+.tp-src {
+  margin-left: auto; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 7px; border-radius: var(--tp-radius-pill);
+}
+.tp-src--model { background: var(--tp-accent-bg); color: var(--tp-accent); }
+.tp-src--calc { background: #ecfdf5; color: var(--tp-ok); }
+.tp-src--fallback { background: var(--tp-warn-bg); color: var(--tp-warn); }
+.tp-ev { display: flex; gap: 10px; padding: 2px 0; align-items: baseline; }
+.tp-ev__k { min-width: 130px; color: var(--tp-text-mut); flex: none; }
+.tp-ev__v { flex: 1; min-width: 0; word-break: break-word; }
+.tp-fallback { color: var(--tp-warn); margin: 6px 0 0; font-size: 11px; }
+
 /* Negotiation rounds. */
 .tp-rd {
   border: 1px solid var(--tp-border); border-radius: var(--tp-radius-sm);

@@ -435,6 +435,7 @@ def create_orchestrator_graph(options: OrchestratorOptions | None = None):
                     *_choice_checkpoints(shared_extras.get("stay_choices", {}), decisions),
                 ],
                 negotiation=state.get("negotiation", []),
+                traces=list(shared_extras.get("traces", [])),
             )
         }
 

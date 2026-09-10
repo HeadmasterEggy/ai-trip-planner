@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from ..contracts import AgentProposal, RevisionRequest, TripBrief
+from ..contracts import AgentProposal, RevisionRequest, SpecialistTrace, TripBrief
 from ..ports import AgentContext
 
 
@@ -73,3 +73,34 @@ def is_schedule_revision(revision: RevisionRequest | None) -> bool:
         return False
     text = revision.reason.lower()
     return any(word in text for word in ("time", "overlap", "schedule"))
+
+
+def record_trace(
+    ctx: AgentContext,
+    agent: str,
+    source: str,
+    *,
+    evidence: dict[str, str] | None = None,
+    revision: RevisionRequest | None = None,
+    fallback_reason: str | None = None,
+    notes: list[str] | None = None,
+) -> None:
+    """Report how this specialist arrived at its proposal.
+
+    Written into the shared context rather than the proposal because it is
+    diagnostic rather than part of the plan: a caller that ignores it still gets
+    everything it needs, and the contract stays about the trip.
+    """
+    ctx.extras.setdefault("traces", []).append(
+        SpecialistTrace(
+            agent=agent,  # type: ignore[arg-type]
+            round=ctx.round,
+            source=source,  # type: ignore[arg-type]
+            evidence=evidence or {},
+            revision=(
+                f"{revision.reason} → {'; '.join(revision.constraints)}" if revision else None
+            ),
+            fallbackReason=fallback_reason,
+            notes=notes or [],
+        )
+    )

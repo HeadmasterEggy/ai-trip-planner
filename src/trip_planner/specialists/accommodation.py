@@ -20,7 +20,7 @@ from ..contracts import (
     UserPreference,
 )
 from ..ports import AgentContext, StayOption
-from .base import FunctionSpecialist, cities, is_budget_revision
+from .base import FunctionSpecialist, cities, is_budget_revision, record_trace
 
 GUESTS_PER_ROOM = 2
 
@@ -204,6 +204,22 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             if budget_revision
             else "Preferred a free-cancellation option rated 8.0 or better where one was eligible."
         )
+
+    record_trace(
+        ctx,
+        "accommodation",
+        "calculator",
+        evidence={
+            "segments": ", ".join(f"{s.city} x{s.nights}n" for s in segments),
+            "rooms": f"{rooms} ({prefs.roomAllocation})",
+            "min rating": str(prefs.minRating),
+            "free cancellation required": str(prefs.freeCancellation).lower(),
+            "confirmed stays": ", ".join(f"{c}: {n}" for c, n in sorted(prefs.chosen.items()))
+            or "none",
+        },
+        revision=revision,
+        notes=["Rates and room maths come from the booking port; no model prices a stay."],
+    )
 
     ctx.extras.setdefault("stay_choices", {}).update(
         {
