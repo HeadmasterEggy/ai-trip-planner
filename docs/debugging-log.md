@@ -239,6 +239,12 @@ session like any other write. Streamlit documents the self-attach case
 (`add_script_run_ctx` from inside the worker also seeds `ThreadState`), which is
 what keeps the write from raising instead of merely disappearing.
 
+The other half of the lesson is handled a level up: a specialist that raises used
+to take the whole fan-out with it, so the delegation tools are now wrapped in
+`ToolErrorMiddleware` and a failure reaches the model as a `ToolMessage` it can
+work around (`supervisor_middleware`, and item 1.3 of
+`docs/framework-alignment.md`).
+
 **How it was found.** The server log held `ThreadPoolExecutor-7_0` …
 `ThreadPoolExecutor-11_0`, five threads warning three times each — the shape of
 one parallel tool batch. Reproducing the two lines `ToolNode` uses

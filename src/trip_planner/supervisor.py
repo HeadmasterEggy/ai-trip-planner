@@ -20,6 +20,13 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware,
+    ModelRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ToolErrorMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain.tools import tool
 
 from .contracts import AgentProposal, RevisionRequest, TripBrief
@@ -45,6 +52,53 @@ REVISION_PROMPT = (
 
 def _tool_name(prefix: str, agent: str) -> str:
     return f"{prefix}_{agent.replace('-', '_')}_specialist"
+
+
+# Bounds on the supervisor's own loop. The graph has a round limit and each
+# specialist has one corrective retry; these bound the delegation loop itself,
+# which otherwise runs until LangGraph's recursion limit and surfaces as an
+# exception the caller has to catch.
+MODEL_CALL_LIMIT = 6
+TOOL_CALLS_PER_SPECIALIST = 2
+
+
+def _tool_failure_message(error: Exception, request: Any) -> str:
+    """Tell the model which tool failed, without echoing the exception.
+
+    The raw text can carry provider or filesystem detail, and the model needs
+    only the tool name and the fact that retrying is pointless. Dropping the
+    section is safe: the workflow fills in any specialist the supervisor did not
+    successfully delegate to (see `workflow.dispatch`).
+    """
+    return (
+        f"{request.tool_call['name']} failed with {type(error).__name__}. "
+        "Leave that section to the workflow and continue with the rest."
+    )
+
+
+def supervisor_middleware(tool_count: int) -> list[Any]:
+    """Resilience for the supervisor loop, in the order the hooks nest.
+
+    Order is semantic, not cosmetic: the first entry is the *outermost* wrapper
+    (`_chain_tool_call_wrappers`, "first = outermost"). The error handler is
+    therefore first, so it sees whatever the retry finally re-raises; with the
+    two swapped, the handler would convert the failure before the retry ever
+    observed an exception and the retry would be dead code. The call limits come
+    last so that every retry attempt is counted against them.
+    """
+    return [
+        # Tool chain, outside in. A failing specialist becomes an error message
+        # the model can work around -- before this it took the whole fan-out with
+        # it (see docs/debugging-log.md, entry 11).
+        ToolErrorMiddleware(on_error=_tool_failure_message),
+        ToolRetryMiddleware(max_retries=1, on_failure="error"),
+        ToolCallLimitMiddleware(run_limit=tool_count * TOOL_CALLS_PER_SPECIALIST),
+        # Model chain. A transient provider failure is retried and backed off
+        # instead of silently downgrading every section to its fallback, which is
+        # what a single timeout used to do.
+        ModelRetryMiddleware(max_retries=2, backoff_factor=2.0),
+        ModelCallLimitMiddleware(run_limit=MODEL_CALL_LIMIT),
+    ]
 
 
 def create_supervisor_tools(
@@ -160,7 +214,12 @@ def dispatch_with_supervisor(
     tools = create_supervisor_tools(
         specialists, brief, ctx, lambda p: collected.__setitem__(p.agent, p), on_progress
     )
-    supervisor = create_agent(model=model, tools=tools, system_prompt=DISPATCH_PROMPT)
+    supervisor = create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=DISPATCH_PROMPT,
+        middleware=supervisor_middleware(len(tools)),
+    )
     supervisor.invoke(
         {
             "messages": [
@@ -200,7 +259,12 @@ def revise_with_supervisor(
     if not tools:
         return proposals
 
-    supervisor = create_agent(model=model, tools=tools, system_prompt=REVISION_PROMPT)
+    supervisor = create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=REVISION_PROMPT,
+        middleware=supervisor_middleware(len(tools)),
+    )
     supervisor.invoke(
         {
             "messages": [
