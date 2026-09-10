@@ -1,9 +1,33 @@
+# Python
 __pycache__/
 *.py[cod]
 .venv/
+
+# Secrets. .env.example is the tracked template; nothing else here is.
 .env
 .env.local
 .streamlit/secrets.toml
+
+# Tooling caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+
+# Build artefacts
+build/
 dist/
+*.egg-info/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Editors. Kept out of the repo because they are per-developer state, not
+# project configuration -- unlike .devcontainer, which lets anyone run this.
+.idea/
+.vscode/
+
+# macOS. Listed here rather than relying on a global ignore file, which only
+# exists on one machine and would not stop a collaborator committing these.
+.DS_Store
