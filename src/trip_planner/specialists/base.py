@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from ..contracts import AgentProposal, RevisionRequest, SpecialistTrace, TripBrief
+from ..contracts import (
+    TRACES_KEY,
+    AgentProposal,
+    RevisionRequest,
+    SpecialistTrace,
+    TripBrief,
+)
 from ..ports import AgentContext
 
 
@@ -73,7 +79,7 @@ def stamp_duration(produced: dict[str, object], seconds: float) -> None:
     The specialist knows what it did, the caller knows how long it took, and neither
     has to guess about the other -- so the caller stamps what it measured.
     """
-    for trace in produced.get("traces", []) or []:
+    for trace in produced.get(TRACES_KEY, []) or []:
         trace.seconds = seconds  # type: ignore[attr-defined]
 
 
@@ -93,7 +99,7 @@ def record_trace(
     diagnostic rather than part of the plan: a caller that ignores it still gets
     everything it needs, and the contract stays about the trip.
     """
-    ctx.extras.setdefault("traces", []).append(
+    ctx.extras.setdefault(TRACES_KEY, []).append(
         SpecialistTrace(
             agent=agent,  # type: ignore[arg-type]
             round=ctx.round,

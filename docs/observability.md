@@ -53,6 +53,19 @@ specialist needs to know anything about the UI, or about which thread it was run
 cheapest way to see round structure in a script: an event with `round=3` means that specialist was
 sent back twice.
 
+## Diagnostics are log records
+
+A degraded path says so through `logging`, one logger per module (`trip_planner.workflow`,
+`trip_planner.chat`, `trip_planner.specialists.itinerary`, ...), rather than `print`. That makes them
+levellable and filterable, and a deployment that collects stdout still gets them:
+
+- a supervisor that could not be used, and a revision that fell back to deterministic routing
+  (`trip_planner.workflow`, WARNING);
+- a model draft rejected and replaced by the local plan (`trip_planner.specialists.*`, WARNING);
+- brief extraction or reply generation falling back (`trip_planner.chat`, WARNING);
+- a planning failure that is a bug rather than our own validation (`trip_planner.ui.render`, ERROR,
+  with the traceback): what the traveller sees is one sentence, and this is where the detail goes.
+
 ## What a section cost
 
 Each trace records how long its specialist took (`seconds`, stamped by whoever ran it) and which route

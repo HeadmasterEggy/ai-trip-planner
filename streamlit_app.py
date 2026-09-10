@@ -8,6 +8,7 @@ from a test or a script without importing Streamlit at all.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import datetime
@@ -37,6 +38,7 @@ from trip_planner.ui.render import (
     budget_breakdown,
     chip,
     choice_option,
+    failure_message,
     negotiation,
     negotiation_verdict,
     plan_markdown,
@@ -51,6 +53,8 @@ from trip_planner.workflow import OrchestratorOptions, forget_thread
 st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
 load_dotenv()
 st.markdown(CSS, unsafe_allow_html=True)
+
+logger = logging.getLogger(__name__)
 
 LABELS = {s.name: s.label for s in ALL_SPECIALISTS}
 
@@ -242,8 +246,10 @@ def render_decisions(plan: TripPlan) -> None:
             labels = {o.id: o.label for o in checkpoint.options}
             ids = list(labels)
             current = checkpoint.selected if checkpoint.selected in ids else ids[0]
+            # The label is the checkpoint's title ("Choose where to stay in Kyoto"), not
+            # its detail: a screen reader reads the label as the group's name.
             picked = st.radio(
-                checkpoint.detail,
+                checkpoint.title,
                 ids,
                 index=ids.index(current),
                 # Bind the mapping now: a bare closure over `labels` would make
@@ -251,6 +257,7 @@ def render_decisions(plan: TripPlan) -> None:
                 format_func=lambda i, labels=labels: labels[i],
                 key=f"choice-{checkpoint.id}",
             )
+            st.caption(checkpoint.detail)
             st.markdown(
                 "".join(choice_option(o, o.id == picked) for o in checkpoint.options),
                 unsafe_allow_html=True,
@@ -431,12 +438,12 @@ def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None
                 response = stream.response
         except Exception as error:  # noqa: BLE001
             st.session_state.messages.append(
-                {"role": "assistant", "content": f"Planning failed: {error}"}
+                {"role": "assistant", "content": failure_message(error)}
             )
             return
         if response is None:  # cannot happen: the loop above drains the stream
             st.session_state.messages.append(
-                {"role": "assistant", "content": "Planning failed: the run produced no plan."}
+                {"role": "assistant", "content": "Something went wrong while planning."}
             )
             return
 

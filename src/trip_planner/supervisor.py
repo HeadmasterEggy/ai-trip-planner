@@ -36,6 +36,8 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from .contracts import (
+    STAY_CHOICES_KEY,
+    TRACES_KEY,
     AgentProposal,
     ChoiceOption,
     ProgressEvent,
@@ -206,8 +208,8 @@ def _report(proposal: AgentProposal, produced: dict[str, Any], tool_call_id: str
     return Command(
         update={
             "proposals": [proposal],
-            "traces": list(produced.get("traces", [])),
-            "stay_choices": dict(produced.get("stay_choices", {})),
+            TRACES_KEY: list(produced.get(TRACES_KEY, [])),
+            STAY_CHOICES_KEY: dict(produced.get(STAY_CHOICES_KEY, {})),
             "messages": [
                 ToolMessage(
                     content=f"{proposal.agent}: {proposal.summary}",
@@ -390,8 +392,8 @@ def _run_agent(
 def _outcome(final: dict[str, Any]) -> SupervisorOutcome:
     return SupervisorOutcome(
         proposals=list(final.get("proposals", [])),
-        traces=list(final.get("traces", [])),
-        stay_choices=dict(final.get("stay_choices", {})),
+        traces=list(final.get(TRACES_KEY, [])),
+        stay_choices=dict(final.get(STAY_CHOICES_KEY, {})),
     )
 
 

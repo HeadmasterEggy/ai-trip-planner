@@ -106,12 +106,3 @@ class MapsAdapter:
             ]
         except (httpx.HTTPError, ValueError):
             return []
-
-
-def create_tool_gateway():
-    from ..ports import ToolGateway
-
-    return ToolGateway(
-        maps=MapsAdapter(),
-        booking=__import__("trip_planner.tools.booking", fromlist=["MockBooking"]).MockBooking(),
-    )

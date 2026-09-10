@@ -12,6 +12,7 @@ them with the venue directly.
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from pydantic import BaseModel, Field
@@ -20,6 +21,9 @@ from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief,
 from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, is_budget_revision, record_trace, trip_days
+
+logger = logging.getLogger(__name__)
+
 
 # The meal envelope is capped both as a share of the trip budget and per
 # person per day, so a large budget cannot quietly become a huge food bill.
@@ -144,7 +148,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             source = "model"
         except Exception as error:  # noqa: BLE001
             fallback_reason = str(error)
-            print(f"[dining] Model draft failed; using a safe local plan: {error}")
+            logger.warning("Model draft failed; using a safe local plan: %s", error)
             draft = _fallback(brief, places, ceiling)
 
     record_trace(
