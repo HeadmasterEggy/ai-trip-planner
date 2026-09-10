@@ -51,7 +51,7 @@ Four imports carry the whole framework surface:
 | --- | --- | --- |
 | `ChatOpenAI` | `models.py:26` | provider + structured output |
 | `create_agent` | `supervisor.py:22` | the one real agent loop |
-| `tool` | `supervisor.py:23` | specialist delegation |
+| `tool` | `supervisor.py:30` | specialist delegation |
 | `StateGraph`, `START`, `END` | `workflow.py:23` | deterministic orchestration |
 
 `create_agent` itself returns a `CompiledStateGraph` built from `StateGraph` and `ToolNode`
@@ -64,7 +64,7 @@ structured-output call and two are deterministic calculators, behind a framework
 
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
-| Supervisor | `create_agent` + one tool per worker | `supervisor.py:163` | Conformant |
+| Supervisor | `create_agent` + one tool per worker | `supervisor.py:217` | Conformant |
 | Outer control | custom `StateGraph` for deterministic steps | `workflow.py:451-462` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
@@ -74,17 +74,17 @@ structured-output call and two are deterministic calculators, behind a framework
 | **Worker results** | final message, or `Command`/`InjectedToolCallId` back into graph state | closure side channel, `shared_extras` | **Deviation** |
 | **Dependency injection** | `context_schema` + `ToolRuntime`, agent built once | closures, agent rebuilt per round | **Deviation** |
 | **Human in the loop** | `checkpointer` + `interrupt()` + `Command(resume=...)` | plan records + full re-run | **Gap** |
-| Resilience | `ModelRetry` / `ToolRetry` / `ToolError` / `ModelFallback` / call limits | one corrective retry, round limit, deterministic fallback | **Partial** |
+| Resilience | `ModelRetry` / `ToolRetry` / `ToolError` / `ModelFallback` / call limits | `ModelRetry`, `ToolRetry`, `ToolError` and both call limits in `supervisor_middleware`; no provider fallback yet | **Conformant**, fallback deferred |
 
 ## What is deliberately different
 
 These are load-bearing, and the strategy below must not sand them off:
 
 1. **The supervisor cannot alter trip facts.** `brief`, `ctx`, `mem` and `tools` are captured when the
-   tools are built (`supervisor.py:69-90`), so the deterministic rules downstream validate the
+   tools are built (`supervisor.py:104-138`), so the deterministic rules downstream validate the
    traveller's request rather than a model's paraphrase of it.
 2. **Revision requests are immutable.** One tool per validated `RevisionRequest`
-   (`supervisor.py:94-141`): the supervisor routes a constraint, it cannot rewrite one.
+   (`supervisor.py:148-195`): the supervisor routes a constraint, it cannot rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
    (`models.py:127`, `workflow.py:321-337`, `workflow.py:382-386`).
@@ -100,8 +100,9 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
-**Progress.** 1.1 and 1.2 shipped together: the routing map now names the six roles that actually
-call a model, and the delegation tools no longer take an argument. The rest is open.
+**Progress.** 1.1, 1.2 and 1.3 have shipped: the routing map names the six roles that call a model,
+the delegation tools take no argument, and the supervisor's loop has retries, error handling and
+declared bounds. 1.4 and the waves after it are open.
 
 ### Wave 1 — Non-structural
 
@@ -168,15 +169,15 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 **Done when.** Nothing in the delegation surface can carry text from the model into a specialist.
 *Shipped.*
 
-#### 1.3 Adopt the official resilience middleware (M)
+#### 1.3 Adopt the official resilience middleware (M) — shipped
 
-**Problem.** Two kinds of failure are handled by hand, and one is not handled at all:
+**Problem.** Two kinds of failure were handled by hand, and one was not handled at all:
 
 - Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
-- Transient provider failures: **no retry**. A timeout or 429 drops straight to the deterministic
-  fallback, which is a silent downgrade of the whole section.
+- Transient provider failures: **no retry**. A timeout or 429 dropped straight to the deterministic
+  fallback, a silent downgrade of the whole section.
 - Loop bounds: the round limit is ours (`workflow.py:443`), and the only bound on the supervisor's
-  own tool loop is LangGraph's default recursion limit, whose failure surfaces as an exception
+  own tool loop was LangGraph's default recursion limit, whose failure surfaced as an exception
   caught by a broad `except` (`workflow.py:335`).
 - Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
@@ -185,55 +186,52 @@ fill in, not merely no required ones), and the specialist-running test invokes w
 ([Prebuilt middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in)):
 `ModelRetryMiddleware`, `ToolRetryMiddleware`, `ToolErrorMiddleware`, `ModelFallbackMiddleware`,
 `ModelCallLimitMiddleware`, `ToolCallLimitMiddleware` — all importable from
-`langchain.agents.middleware` in the installed version.
+`langchain.agents.middleware` in the installed version. `ToolErrorMiddleware` needs
+`langchain>=1.3.14`; this project has 1.4.0.
 
-**Target.** Pass middleware to the supervisor's `create_agent`:
+**Shipped.** `supervisor_middleware(tool_count)` in `supervisor.py` builds one list for both agents:
+`ToolErrorMiddleware` (with `on_error` naming the exception type and not echoing its text),
+`ToolRetryMiddleware(max_retries=1, on_failure="error")`, `ToolCallLimitMiddleware`,
+`ModelRetryMiddleware(max_retries=2, backoff_factor=2.0)` and `ModelCallLimitMiddleware`. The two
+bounds are module constants (`MODEL_CALL_LIMIT`, `TOOL_CALLS_PER_SPECIALIST`) rather than numbers
+buried in a call.
 
-```python
-create_agent(
-    model=model,
-    tools=tools,
-    system_prompt=DISPATCH_PROMPT,
-    middleware=[
-        ModelRetryMiddleware(max_retries=2, backoff_factor=2.0),
-        ToolRetryMiddleware(max_retries=1, on_failure="error"),
-        # Keep the delegation failure visible rather than killing the batch:
-        ToolErrorMiddleware(
-            on_error=lambda exc, req: f"{req.tool_call['name']} failed: {type(exc).__name__}"
-        ),
-        ToolCallLimitMiddleware(run_limit=len(tools) * 2),
-        ModelCallLimitMiddleware(run_limit=6),
-    ],
-)
-```
+**The order rule, which the official example gets wrong.** `_chain_tool_call_wrappers` documents
+"first = outermost", so the error handler has to come *before* the retry it is meant to catch. The
+docs' own example lists the retry first with a comment saying to place it "inner" — following the
+example would make the retry dead code, because the handler would convert the failure before the
+retry ever saw an exception. The factory's implementation, and the tests here, follow the prose.
 
-Two notes from the docs that matter here: `ToolRetryMiddleware` must sit **inner** (earlier) and be
-configured `on_failure="error"` for exceptions to reach `ToolErrorMiddleware`; and the
-`on_error` handler should name the exception type rather than echo its message, to avoid leaking
-internals to the model. `ToolErrorMiddleware` needs `langchain>=1.3.14`; this project has 1.4.0.
+**Deliberately not included.** `ModelFallbackMiddleware`. It is the right mechanism, but using it
+needs a second *configured* provider and a decision about which role falls back to what, and the
+MiniMax branch has no test path without its key. Wiring it blind would add a code path nobody can
+exercise. It is a separate item.
 
-**Why this is more than tidiness.** The frozen progress panel fixed in `db59f0e` was a tool exception
-escaping delegation and collapsing the run to the deterministic path. `ToolErrorMiddleware` is the
-framework-level version of that fix: a failing tool becomes a `ToolMessage` the model can react to,
-instead of taking the batch with it.
+**What the counterfactual showed.** Running these tests with `supervisor_middleware` replaced by an
+empty list — which is what the code did before — reproduces the old behaviour exactly:
 
-**Risks.** A retry policy that is too eager multiplies cost on a hard failure; keep retries at 1-2
-with backoff, and keep the existing deterministic fallback as the final answer. Middleware order is
-semantic — document it in a comment, because it is not obvious from the call site.
+| Scenario | Without middleware | With it |
+| --- | --- | --- |
+| Transient model failure | `ConnectionError` escapes `dispatch_with_supervisor` | retried, run continues |
+| A specialist tool raises | `ValueError` escapes; the whole fan-out dies | sanitized error `ToolMessage`, batch survives |
+| Model that never stops delegating | recursion limit, surfacing as a `KeyError` | stops at the declared call limit |
 
-**Tests.** A fake model that fails once and then succeeds must produce a model-backed section (not a
-fallback). A tool that raises must leave the supervisor able to finish with the remaining
-specialists. A model that exceeds the call limit must still yield a complete plan via the
-deterministic path.
+**Risks and how they are held.** A retry policy that is too eager multiplies cost on a hard failure:
+retries stay at 1-2 with backoff, and the deterministic fallback remains the final answer. Order is
+semantic, so it lives in one factory with the reason written down, not at the call sites.
+
+**Tests.** `tests/test_supervisor_middleware.py` drives the real `dispatch_with_supervisor` against a
+scripted chat model — no key, no network, no mocked `create_agent`: the retry, the sanitized
+surviving batch, the bounded loop, the revision agent carrying the same list, and the order rule.
 
 **Done when.** No transient provider error reaches the user as a silently downgraded section, and the
-supervisor's loop bounds are declared rather than inherited.
+supervisor's loop bounds are declared rather than inherited. *Shipped.*
 
 #### 1.4 Replace the custom progress callback with official streaming (M)
 
 **Problem.** Progress travels through `OrchestratorOptions.on_progress`, a hand-rolled callback that
 the specialists call from whatever thread they happen to run on (`workflow.py:308-316`,
-`supervisor.py:76,118`). That design is what produced the worker-thread bug: the callback wrote
+`supervisor.py:132,178`). That design is what produced the worker-thread bug: the callback wrote
 Streamlit widgets with no `ScriptRunContext`, raised inside the tool, and took the whole delegation
 with it. The shipped fix (`ui/live.py`) binds the run context correctly and is tested, but the
 fragility is structural: any consumer of `on_progress` must know which thread it is called on.
@@ -373,7 +371,7 @@ Two details that will otherwise cost an afternoon:
 **Reducer requirement.** The outer `State` is a plain `TypedDict` with overwrite semantics
 (`workflow.py:87-94`). Parallel tool calls appending to the same key need a reducer
 (`Annotated[list[...], operator.add]`), and the existing "restore registration order" step
-(`supervisor.py:180`) must stay — with concurrent appends the arrival order is not stable, and
+(`supervisor.py:239`) must stay — with concurrent appends the arrival order is not stable, and
 section order in the plan must not become nondeterministic.
 
 **Risks.** Thread-safety of the reducer under parallel tools (LangGraph handles this, but the tests
