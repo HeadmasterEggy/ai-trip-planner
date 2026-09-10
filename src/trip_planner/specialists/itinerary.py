@@ -10,6 +10,7 @@ near Tokyo & Kyoto", and every plan silently fell back.
 
 from __future__ import annotations
 
+import logging
 from itertools import pairwise
 from typing import Annotated
 
@@ -19,6 +20,9 @@ from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief
 from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, record_trace, trip_days
+
+logger = logging.getLogger(__name__)
+
 
 # Activities may claim at most this share of the trip budget, leaving room for
 # transport, stay and meals.
@@ -186,7 +190,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             source = "model"
         except Exception as error:  # noqa: BLE001
             fallback_reason = str(error)
-            print(f"[itinerary] Model draft failed; using a safe local plan: {error}")
+            logger.warning("Model draft failed; using a safe local plan: %s", error)
             draft = _fallback(brief, days, grounded)
 
     conflicts = travel_conflicts(draft, ctx)

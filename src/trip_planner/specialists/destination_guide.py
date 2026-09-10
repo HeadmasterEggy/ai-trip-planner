@@ -13,6 +13,7 @@ and the guide fell back on every single round.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Annotated
 
@@ -22,6 +23,9 @@ from ..contracts import AgentProposal, ProposalItem, RevisionRequest, TripBrief,
 from ..models import create_structured_invoker, describe_route
 from ..ports import AgentContext, Place
 from .base import FunctionSpecialist, record_trace
+
+logger = logging.getLogger(__name__)
+
 
 MONTHS = (
     "January",
@@ -158,7 +162,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
             source = "model"
         except Exception as error:  # noqa: BLE001
             fallback_reason = str(error)
-            print(f"[destination-guide] Model draft failed; using a safe local plan: {error}")
+            logger.warning("Model draft failed; using a safe local plan: %s", error)
             draft = _fallback(brief, month, grounded)
 
     record_trace(

@@ -6,6 +6,7 @@ deterministic output, which is exactly the path a reviewer or CI hits.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
@@ -25,6 +26,7 @@ from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.specialists.accommodation import split_stay
 from trip_planner.specialists.base import FunctionSpecialist
 from trip_planner.specialists.itinerary import ACTIVITY_BUDGET_SHARE, DEFAULT_ACTIVITY_COST_USD
+from trip_planner.tools import create_tool_gateway
 from trip_planner.tools.booking import MockBooking
 from trip_planner.tools.maps import MapsAdapter
 from trip_planner.workflow import (
@@ -459,3 +461,27 @@ def test_the_pause_never_offers_a_revision_that_cannot_help(brief):
     stalled = any(entry.stalled for entry in plan.negotiation)
     unresolved = bool(plan.negotiation[-1].conflicts)
     assert stalled or not unresolved or no_room
+
+
+def test_a_degraded_path_is_logged_rather_than_printed(brief, caplog):
+    """`print` cannot be levelled, filtered or captured; a logger can.
+
+    Every offline run takes the degraded path, so this is the diagnostic a deployment
+    actually sees.
+    """
+    with caplog.at_level(logging.WARNING):
+        run_orchestrator(brief, OrchestratorOptions(max_rounds=1))
+
+    assert any("Delegation unavailable" in record.getMessage() for record in caplog.records), (
+        caplog.text
+    )
+
+
+def test_booking_is_always_the_fixture(monkeypatch):
+    """There is no live booking provider; the roadmap says one has to exist first."""
+    monkeypatch.setenv("USE_MOCK_TOOLS", "false")
+
+    gateway = create_tool_gateway()
+
+    assert isinstance(gateway.booking, MockBooking)
+    assert isinstance(gateway.maps, MapsAdapter)

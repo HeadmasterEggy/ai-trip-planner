@@ -15,7 +15,7 @@ src/trip_planner/
   supervisor.py                   typed delegation tools and the two supervisor loops
   workflow.py                     the LangGraph state machine
   specialists/                    the five agents, one module each
-  tools/                          maps and booking adapters
+  tools/                          maps and booking adapters, and the gateway that joins them
   ui/                             presentation tokens and rendering helpers
 tests/                            behaviour tests, no network
 docs/                             architecture, orchestration, UI, observability, debugging

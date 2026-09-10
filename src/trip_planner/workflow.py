@@ -16,6 +16,7 @@ budget overrun oscillated 29.25% -> 16.50% -> 25.25% without ever settling.
 
 from __future__ import annotations
 
+import logging
 import operator
 import time
 from collections.abc import Iterator
@@ -41,6 +42,8 @@ from .budget import (
     sum_usd,
 )
 from .contracts import (
+    STAY_CHOICES_KEY,
+    TRACES_KEY,
     AgentProposal,
     ChoiceOption,
     HitlCheckpoint,
@@ -60,7 +63,10 @@ from .ports import AgentContext, ToolGateway
 from .specialists import ALL_SPECIALISTS
 from .specialists.base import stamp_duration
 from .supervisor import dispatch_with_supervisor, revise_with_supervisor
-from .tools.maps import create_tool_gateway
+from .tools import create_tool_gateway
+
+logger = logging.getLogger(__name__)
+
 
 DEFAULT_MAX_ROUNDS = 3
 
@@ -459,9 +465,9 @@ def create_orchestrator_graph():
         traces: list[SpecialistTrace] = []
         choices: dict[str, list[ChoiceOption]] = {}
         for produced in reported:
-            traces += produced.get("traces", [])
-            choices = {**choices, **produced.get("stay_choices", {})}
-        return {"traces": traces, "stay_choices": choices}
+            traces += produced.get(TRACES_KEY, [])
+            choices = {**choices, **produced.get(STAY_CHOICES_KEY, {})}
+        return {TRACES_KEY: traces, STAY_CHOICES_KEY: choices}
 
     def deterministic_dispatch(run: TripRun, brief: TripBrief) -> tuple[list, dict[str, Any]]:
         """Run every specialist concurrently.
@@ -518,8 +524,8 @@ def create_orchestrator_graph():
             )
             proposals = outcome.proposals
             reported: dict[str, Any] = {
-                "traces": outcome.traces,
-                "stay_choices": outcome.stay_choices,
+                TRACES_KEY: outcome.traces,
+                STAY_CHOICES_KEY: outcome.stay_choices,
             }
             # The supervisor may legitimately skip a specialist. Fill the gaps so
             # the plan always has all five sections rather than silently losing one.
@@ -534,11 +540,11 @@ def create_orchestrator_graph():
                 proposals = [by_agent[s.name] for s in run.specialists]
                 filled = collect(backfilled)
                 reported = {
-                    "traces": [*reported["traces"], *filled["traces"]],
-                    "stay_choices": {**reported["stay_choices"], **filled["stay_choices"]},
+                    TRACES_KEY: [*reported[TRACES_KEY], *filled[TRACES_KEY]],
+                    STAY_CHOICES_KEY: {**reported[STAY_CHOICES_KEY], **filled[STAY_CHOICES_KEY]},
                 }
         except Exception as error:  # noqa: BLE001
-            print(f"[supervisor] Delegation unavailable; using deterministic dispatch: {error}")
+            logger.warning("Delegation unavailable; using deterministic dispatch: %s", error)
             proposals, reported = deterministic_dispatch(run, brief)
         return {"round": 1, "max_rounds": run.max_rounds, "proposals": proposals, **reported}
 
@@ -588,11 +594,10 @@ def create_orchestrator_graph():
                     _write_progress,
                 )
                 proposals = outcome.proposals
-                reported = {"traces": outcome.traces, "stay_choices": outcome.stay_choices}
+                reported = {TRACES_KEY: outcome.traces, STAY_CHOICES_KEY: outcome.stay_choices}
             except Exception as error:  # noqa: BLE001
-                print(
-                    "[supervisor] Revision delegation unavailable; using deterministic "
-                    f"routing: {error}"
+                logger.warning(
+                    "Revision delegation unavailable; using deterministic routing: %s", error
                 )
                 proposals, reported = deterministic_revision()
 
@@ -653,10 +658,10 @@ def create_orchestrator_graph():
                         state["max_rounds"],
                         decided=state.get("escalation_decided", False),
                     ),
-                    *_choice_checkpoints(state.get("stay_choices", {}), run.decisions),
+                    *_choice_checkpoints(state.get(STAY_CHOICES_KEY, {}), run.decisions),
                 ],
                 negotiation=state.get("negotiation", []),
-                traces=state.get("traces", []),
+                traces=state.get(TRACES_KEY, []),
             )
         }
 

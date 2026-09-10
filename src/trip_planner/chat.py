@@ -12,6 +12,7 @@ than asking, because the plan then silently drifts from what they asked for.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -28,10 +29,13 @@ from .contracts import (
     TripPlan,
     brief_problem,
 )
-from .demo import DEMO_BRIEF
+from .demo import demo_brief
 from .memory import memory as default_memory
 from .models import create_routed_chat_model
 from .workflow import OrchestratorOptions, PlanStream, run_orchestrator_stream
+
+logger = logging.getLogger(__name__)
+
 
 PATCH_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
 
@@ -227,7 +231,7 @@ def _extract_patch(
         try:
             return selected.extract(message, current)
         except (ValidationError, ValueError, RuntimeError) as error:
-            print(f"[chat] Model brief extraction failed; using the local parser: {error}")
+            logger.warning("Model brief extraction failed; using the local parser: %s", error)
     return extract_brief_patch_locally(message)
 
 
@@ -369,7 +373,7 @@ class ChatStream:
                     )
                 )
             except Exception as error:  # noqa: BLE001 - a reply failure must not lose the plan
-                print(f"[chat] Natural-language reply failed; using a local fallback: {error}")
+                logger.warning("Natural-language reply failed; using a local fallback: %s", error)
 
         self._mem.append_short_term(self._trip_id, ChatTurn(role="assistant", content=reply))
         self.response = ChatResponse(reply=reply, plan=plan)
@@ -386,7 +390,9 @@ def run_trip_chat_stream(
 ) -> ChatStream:
     """Apply a message to the brief, re-plan, and answer -- reporting progress."""
     options = options or OrchestratorOptions()
-    base = request.brief or DEMO_BRIEF
+    # `demo_brief()` rather than the module constant: that one is computed at import, so
+    # a server running for two months would hand a caller a trip in the past.
+    base = request.brief or demo_brief()
     current = TripBrief(**{**base.model_dump(), "tripId": request.tripId})
 
     patch = _extract_patch(request.message, current, extractor)

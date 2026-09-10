@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from ..contracts import (
+    STAY_CHOICES_KEY,
     AgentProposal,
     ChoiceOption,
     ProposalItem,
@@ -222,7 +223,7 @@ def _plan(brief: TripBrief, ctx: AgentContext, revision: RevisionRequest | None)
         notes=["Rates and room maths come from the booking port; no model prices a stay."],
     )
 
-    ctx.extras.setdefault("stay_choices", {}).update(
+    ctx.extras.setdefault(STAY_CHOICES_KEY, {}).update(
         {
             city: [
                 ChoiceOption(

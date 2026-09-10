@@ -7,6 +7,7 @@ can be unit-tested by asserting on the HTML they return.
 from __future__ import annotations
 
 import html
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -404,3 +405,19 @@ def trace_block(traces: list, agent: str) -> str:
             f"{revision}{rows}{fallback}{notes}</div>"
         )
     return "".join(blocks)
+
+
+logger = logging.getLogger(__name__)
+
+
+def failure_message(error: Exception) -> str:
+    """One line for the traveller, with the detail kept out of the transcript.
+
+    A `ValueError` is ours and already written for them -- brief validation speaks in
+    dates and nights. Anything else is a bug: they get a sentence, and the traceback
+    goes to the server log rather than into a chat bubble.
+    """
+    if isinstance(error, ValueError):
+        return str(error)
+    logger.exception("planning failed")
+    return "Something went wrong while planning. Please try again."

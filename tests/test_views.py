@@ -15,6 +15,7 @@ from trip_planner.memory import InMemoryStore
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
     budget_breakdown,
+    failure_message,
     negotiation,
     negotiation_verdict,
     scheduled_days,
@@ -199,3 +200,17 @@ def test_the_timeline_names_the_owner_as_well_as_colouring_it(plan):
     owners = set(re.findall(r'class="tp-tl__owner">([^<]+)<', html))
     assert owners, "no owner labels rendered"
     assert owners <= {escape(label, quote=True) for label in labels.values()}
+
+
+def test_a_failure_is_explained_or_logged_but_not_dumped(caplog):
+    """Our own validation speaks to the traveller; a bug does not."""
+    assert failure_message(ValueError("Trip end date must be after the start date.")) == (
+        "Trip end date must be after the start date."
+    )
+
+    with caplog.at_level("ERROR"):
+        line = failure_message(RuntimeError("pydantic traceback nobody can read"))
+
+    assert "pydantic" not in line
+    assert "try again" in line
+    assert any("planning failed" in record.getMessage() for record in caplog.records)

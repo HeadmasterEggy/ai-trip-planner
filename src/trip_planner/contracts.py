@@ -173,6 +173,13 @@ class ChoiceOption(BaseModel):
     recommended: bool = False
 
 
+# The keys a specialist reports through `AgentContext.extras`, and the matching state
+# channels. Constants because a typo in a string literal would silently drop a report
+# rather than fail: 16 call sites shared these two words.
+TRACES_KEY = "traces"
+STAY_CHOICES_KEY = "stay_choices"
+
+
 def merge_choices(
     left: dict[str, list[ChoiceOption]] | None,
     right: dict[str, list[ChoiceOption]] | None,

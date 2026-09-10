@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from trip_planner.chat import (
@@ -133,3 +135,15 @@ def test_an_injected_extractor_is_preferred_over_the_local_parser():
         reply_generator=lambda prompt: "ok",
     )
     assert response.plan.brief.destination == "Porto"
+
+
+def test_a_turn_without_a_brief_starts_from_today():
+    """The module constant's dates are fixed at import, so a server that has been up
+    for two months would offer a trip in the past."""
+    response = run_trip_chat(
+        ChatRequest(tripId="t4", message="hello"),
+        OrchestratorOptions(specialists=ALL_SPECIALISTS, mem=InMemoryStore(), max_rounds=1),
+        reply_generator=lambda prompt: "ok",
+    )
+
+    assert response.plan.brief.dates[0] > datetime.now(UTC).date().isoformat()
