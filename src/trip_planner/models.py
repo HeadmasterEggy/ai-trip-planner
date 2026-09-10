@@ -28,15 +28,23 @@ from pydantic import BaseModel, ValidationError
 
 Schema = TypeVar("Schema", bound=BaseModel)
 
-# Every task routes to DeepSeek: MiniMax produced comparable drafts but took
+# What each *model role* runs on. The keys are roles, not specialists: transport
+# and accommodation never call a model at all, and the supervisor, brief
+# extraction and reply generation are not specialists. Deciding is cheap and
+# generating is not, so the two are deliberately routable apart.
+#
+# Every role routes to DeepSeek: MiniMax produced comparable drafts but took
 # 15-25s per structured call against ~7s, tripling page latency. The MiniMax
-# branch stays wired so a task can be routed back by editing this map.
+# branch stays wired so a role can be routed back by editing this map.
 MODEL_ROUTING: dict[str, str] = {
+    # One generation role per model-backed specialist.
     "itinerary": "deepseek",
     "destination-guide": "deepseek",
     "dining": "deepseek",
-    "transport": "deepseek",
-    "accommodation": "deepseek",
+    # Orchestration and conversation.
+    "supervisor": "deepseek",
+    "brief-extraction": "deepseek",
+    "reply": "deepseek",
 }
 
 
@@ -44,7 +52,10 @@ def create_routed_chat_model(task: str) -> ChatOpenAI | None:
     """Build the chat model for a task, or None when its credentials are absent.
 
     Returning None rather than raising is what lets the whole app run offline:
-    each specialist falls back to deterministic output.
+    each specialist falls back to deterministic output. An unknown role also
+    resolves to the default provider rather than raising, so a role added
+    without a route degrades instead of breaking a run; tests/test_models.py
+    asserts the map covers every role that asks.
     """
     provider = MODEL_ROUTING.get(task, "deepseek")
     if provider == "deepseek":

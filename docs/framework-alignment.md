@@ -64,13 +64,13 @@ structured-output call and two are deterministic calculators, behind a framework
 
 | Dimension | Official | Here | Verdict |
 | --- | --- | --- | --- |
-| Supervisor | `create_agent` + one tool per worker | `supervisor.py:157` | Conformant |
+| Supervisor | `create_agent` + one tool per worker | `supervisor.py:163` | Conformant |
 | Outer control | custom `StateGraph` for deterministic steps | `workflow.py:451-462` | Conformant, and what the guide recommends |
 | Worker state | stateless per invocation (isolated) | pure `invoke(brief, ctx, revision)` | Conformant |
 | Parallelism | the main agent may call several subagents in one turn | models batching tool calls, `ToolNode` runs them on a pool | Conformant |
-| Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:106`) | Conformant (required for DeepSeek) |
+| Structured output | provider-native / json_schema / function calling | `method="function_calling"` (`models.py:117`) | Conformant (required for DeepSeek) |
 | Tracing | LangSmith | `@traceable` on `detect_conflicts` | Conformant |
-| **Delegation input** | the supervisor decides **what** each worker is told | `objective` is accepted and never used | **Deviation** |
+| **Delegation input** | the supervisor decides **what** each worker is told | no input at all, and deliberately so: the worker derives its prompt from the brief | **Deliberate** |
 | **Worker results** | final message, or `Command`/`InjectedToolCallId` back into graph state | closure side channel, `shared_extras` | **Deviation** |
 | **Dependency injection** | `context_schema` + `ToolRuntime`, agent built once | closures, agent rebuilt per round | **Deviation** |
 | **Human in the loop** | `checkpointer` + `interrupt()` + `Command(resume=...)` | plan records + full re-run | **Gap** |
@@ -81,13 +81,13 @@ structured-output call and two are deterministic calculators, behind a framework
 These are load-bearing, and the strategy below must not sand them off:
 
 1. **The supervisor cannot alter trip facts.** `brief`, `ctx`, `mem` and `tools` are captured when the
-   tools are built (`supervisor.py:55-63`), so the deterministic rules downstream validate the
+   tools are built (`supervisor.py:69-90`), so the deterministic rules downstream validate the
    traveller's request rather than a model's paraphrase of it.
 2. **Revision requests are immutable.** One tool per validated `RevisionRequest`
-   (`supervisor.py:92-135`): the supervisor routes a constraint, it cannot rewrite one.
+   (`supervisor.py:94-141`): the supervisor routes a constraint, it cannot rewrite one.
 3. **Deterministic fallbacks at every layer.** A model that fails schema validation, a supervisor
    that fails or under-delegates, and a graph that runs too long all end in the deterministic path
-   (`models.py:116`, `workflow.py:321-337`, `workflow.py:382-386`).
+   (`models.py:127`, `workflow.py:321-337`, `workflow.py:382-386`).
 4. **A decision is a preference, not an override.** `apply_decision` writes to long-term memory
    (`decisions.py:49`), which is why a choice survives the next message — something a one-shot
    `interrupt` would not give.
@@ -100,70 +100,85 @@ says what is gained and lost.
 Effort is S (hours), M (about a day), L (more than a day) for one developer already familiar with
 the code. Waves are ordered by risk, not by value: Wave 1 cannot break the plan, Wave 3 can.
 
+**Progress.** 1.1 and 1.2 shipped together: the routing map now names the six roles that actually
+call a model, and the delegation tools no longer take an argument. The rest is open.
+
 ### Wave 1 — Non-structural
 
 Low risk, no change to the state model. Each item is independently shippable.
 
-#### 1.1 A routing entry for the supervisor (S)
+#### 1.1 A route per model role, not per specialist (S) — shipped
 
-**Problem.** The supervisor borrows the itinerary route (`supervisor.py:149,186`
-`create_routed_chat_model("itinerary")`), so `MODEL_ROUTING` cannot express "the supervisor runs on a
-different model than the workers" — which is the normal shape, since routing is a cheap decision and
-the workers do the expensive generation.
+**Problem.** Four different workloads shared one route. The supervisor
+(`supervisor.py:155,192` at the time `:149,186`) borrowed the itinerary route for its dispatch and
+revision decisions, and so did brief extraction and reply generation (`chat.py:207,293`) — a small
+classification and a short generation, both riding the day-plan configuration. Meanwhile
+`MODEL_ROUTING` carried `transport` and `accommodation`, which never call a model at all, and the
+sidebar listed them as routed. The map described "the five specialists"; what the code does is
+"six model roles, and two calculators that have none".
 
-**Official mechanism.** None needed; `MODEL_ROUTING` is this project's own seam
-(`models.py:34-40`) and the docstring already claims a task "can be routed back by editing this
-map", which is only true for the five worker tasks.
+**Official mechanism.** None needed — `MODEL_ROUTING` is this project's own seam. The point is the
+one the docs make about subagent specs: the model a role runs on is a per-role decision, and
+deciding is cheap where generating is not.
 
-**Target.** Add `"supervisor": "deepseek"`, use `create_routed_chat_model("supervisor")` in both
-supervisor functions, and let the sidebar's routing table show it (`streamlit_app.py:164-166`).
+**Target.** Key the map by role and route each call site to its own:
 
-**Tests.** `MODEL_ROUTING["supervisor"]` exists and every value is a key the factory understands;
-`create_routed_chat_model("supervisor")` returns `None` without credentials.
+```python
+MODEL_ROUTING: dict[str, str] = {
+    "itinerary": "deepseek",
+    "destination-guide": "deepseek",
+    "dining": "deepseek",
+    "supervisor": "deepseek",
+    "brief-extraction": "deepseek",
+    "reply": "deepseek",
+}
+```
 
-**Done when.** Changing the supervisor's provider is a one-line edit and the routing table in the UI
-lists it.
+`create_routed_chat_model` keeps its lenient default for an unknown role — raising there would break
+a run rather than degrade it — so the map's completeness is a test's job, not a runtime check.
 
-#### 1.2 Decide what `objective` is for (S)
+**Tests.** The map's key set is asserted exactly; `transport` and `accommodation` are asserted
+absent; every value is asserted to be a provider the factory branches on (anything that is not
+`deepseek` silently takes the MiniMax branch, so a typo would be routed to the wrong account system);
+and a spy over the factory proves which roles ask — the three model-backed specialists during a
+deterministic run, and each of supervisor, extraction and reply from the module that owns it.
 
-**Problem.** The delegation tool declares `objective: str` and never uses it
-(`supervisor.py:48,75,117`); `specialist.invoke(brief, ctx, None)` rebuilds its prompt from the
-brief alone. The prompt asks the supervisor to "delegate a bounded objective to each"
-(`supervisor.py:32-34`) and the model's answer is discarded. That is not how the documented pattern
+**Done when.** Changing any role's provider is a one-line edit and the sidebar's routing table only
+lists roles that call a model. *Shipped.*
+
+#### 1.2 Decide what `objective` is for (S) — shipped, deleted
+
+**Problem.** The delegation tool declared `objective: str` and never used it, while
+`specialist.invoke(brief, ctx, None)` rebuilt its prompt from the brief alone. The dispatch
+prompt asked the supervisor to "delegate a bounded objective to each", and the model's answer
+was discarded. That is not how the documented pattern
 works — in the [Subagents](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents)
 pattern the main agent "decides which subagent to invoke, **what input to provide**, and how to
 combine results" — and a parameter that does nothing is worse than no parameter, because it reads as
 a capability.
 
-**Target, pick one.**
+**Decision.** Deleted, in favour of the invariant over the capability. The plan is a function of the
+brief; the supervisor's job is genuinely "who and when". Both tool factories now build argument-free
+tools and say why in the docstring. If a bounded objective is ever wanted, the honest version is a
+typed field the specialist validates, not free text.
 
-- *Use it.* Thread `objective` into `_prompt(...)` in the three model-backed specialists as an extra
-  instruction line ("focus for this delegation: ..."), clearly subordinate to the brief. Keep it out
-  of the deterministic calculators, which have no prompt.
-- *Delete it.* Drop `objective` from `_Delegation`, keep only the tool name and description, and let
-  the description carry the whole signal. Cheaper and keeps the "model cannot influence the work"
-  guarantee absolute.
+**Tests.** The dispatch and revision tools are asserted to expose an empty schema (no properties to
+fill in, not merely no required ones), and the specialist-running test invokes with `{}`.
 
-**Recommendation.** Delete it. The project's value is that the plan is a function of the brief, and
-the supervisor's job is genuinely "who and when". If a bounded objective is ever wanted, the honest
-version is a typed field the specialist validates, not free text.
-
-**Tests.** Either way: a test that asserts the invariant being claimed. If deleting, a test that the
-tool schema has no free-text input beyond the specialist identity; if using, a test that the
-objective reaches the prompt and cannot introduce a trip fact (a brief field changed by the objective
-must still be rejected downstream).
+**Done when.** Nothing in the delegation surface can carry text from the model into a specialist.
+*Shipped.*
 
 #### 1.3 Adopt the official resilience middleware (M)
 
 **Problem.** Two kinds of failure are handled by hand, and one is not handled at all:
 
-- Schema failures: one corrective retry (`models.py:116-120`) — fine, keep.
+- Schema failures: one corrective retry (`models.py:127-131`) — fine, keep.
 - Transient provider failures: **no retry**. A timeout or 429 drops straight to the deterministic
   fallback, which is a silent downgrade of the whole section.
 - Loop bounds: the round limit is ours (`workflow.py:443`), and the only bound on the supervisor's
   own tool loop is LangGraph's default recursion limit, whose failure surfaces as an exception
   caught by a broad `except` (`workflow.py:335`).
-- Provider fallback: the MiniMax branch in `models.py:69-78` is unreachable, because every entry in
+- Provider fallback: the MiniMax branch in `models.py:80-89` is unreachable, because every entry in
   `MODEL_ROUTING` points at DeepSeek.
 
 **Official mechanism.** Provider-agnostic middleware
@@ -358,7 +373,7 @@ Two details that will otherwise cost an afternoon:
 **Reducer requirement.** The outer `State` is a plain `TypedDict` with overwrite semantics
 (`workflow.py:87-94`). Parallel tool calls appending to the same key need a reducer
 (`Annotated[list[...], operator.add]`), and the existing "restore registration order" step
-(`supervisor.py:174`) must stay — with concurrent appends the arrival order is not stable, and
+(`supervisor.py:180`) must stay — with concurrent appends the arrival order is not stable, and
 section order in the plan must not become nondeterministic.
 
 **Risks.** Thread-safety of the reducer under parallel tools (LangGraph handles this, but the tests
