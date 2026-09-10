@@ -7,11 +7,11 @@ streamlit_app.py                  entry point (Streamlit Cloud looks for this na
 src/trip_planner/
   contracts.py                    Pydantic models crossing every boundary
   ports.py                        MapsPort, BookingPort, MemoryStore protocols
-  demo.py                         the brief a fresh session starts from
+  demo.py                         a complete example trip, for scripts and tests
   models.py                       provider routing and structured-output adaptation
   budget.py                       USD roll-up in cents, negotiation and escalation thresholds
   memory.py                       short-term chat turns, long-term preferences
-  chat.py                         message -> brief patch -> re-plan -> reply
+  chat.py                         message -> trip patch -> ask or plan -> reply
   supervisor.py                   typed delegation tools and the two supervisor loops
   workflow.py                     the LangGraph state machine
   specialists/                    the five agents, one module each

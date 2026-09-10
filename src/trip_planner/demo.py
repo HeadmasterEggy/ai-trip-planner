@@ -1,7 +1,12 @@
-"""The brief a fresh session starts from.
+"""A complete example trip, for scripts, tests and the documented API example.
 
-The dates are relative to today rather than fixed, so the demo does not start
-by asking a traveller to plan a trip that has already happened.
+The UI no longer starts from this. Its first screen is an empty conversation, so
+a traveller never opens the app on someone else's trip and never has to delete
+Tokyo before saying where they actually want to go. What remains is a convenient
+full brief for a script or a test.
+
+The dates are relative to today rather than fixed, so the example does not
+describe a trip that has already happened.
 """
 
 from __future__ import annotations

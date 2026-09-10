@@ -139,6 +139,29 @@ CSS = """
   margin-bottom: 2px;
 }
 
+/* The opening screen. Before anything is planned there is no plan to put beside
+   the conversation, so this is the whole page: a greeting, and the invitation to
+   say where. Centred and given vertical room, because an app that opens on an
+   empty form has already asked the traveller to do the work. */
+.tp-hero {
+  text-align: center;
+  padding: 7vh 0 20px;
+}
+.tp-hero__mark { font-size: 42px; line-height: 1; }
+.tp-hero__title {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 12px 0 8px;
+}
+.tp-hero__sub {
+  color: var(--tp-text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 460px;
+  margin: 0 auto;
+}
+
 /* Day timeline. Items from different specialists share one axis, which is the
    only way a clash between them is visible to a reader. */
 .tp-tl__day { margin-bottom: 14px; }

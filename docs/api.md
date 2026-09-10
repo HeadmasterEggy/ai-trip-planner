@@ -7,8 +7,10 @@ Everything below runs without a provider key.
 
 ## `run_trip_chat` — one conversational turn
 
-The entry point the UI uses. A message becomes an explicit patch of the brief, the orchestrator
-re-plans, and a reply is written from the resulting plan.
+The entry point the UI uses. A message becomes an explicit patch of the trip, the patch is merged
+into whatever the request already carries, and — once nothing required is missing — the orchestrator
+re-plans and a reply is written from the resulting plan. While something is still missing the turn
+asks for it instead and returns no plan.
 
 ```python
 from trip_planner.chat import run_trip_chat
@@ -19,17 +21,55 @@ response = run_trip_chat(
     ChatRequest(tripId="trip-demo", message="make it 4 people", brief=DEMO_BRIEF)
 )
 response.reply  # str, in the language of the message
-response.plan  # TripPlan
+response.plan  # TripPlan, or None when the turn had to ask for something
+response.draft  # BriefPatch: what the trip looks like after this turn
 ```
 
-`brief` is optional; without it the demo brief is used. Passing the latest brief is what lets a
-stateless caller apply an incremental edit.
+A trip reaches the planner one of two ways, and a request may carry both — a complete `brief` wins:
 
-Two seams exist for testing, both keyword-only:
+| Field | Meaning |
+| --- | --- |
+| `brief` | A complete, validated `TripBrief`. The form path, and the shortest route for a script. |
+| `draft` | A `BriefPatch`: the fields stated so far, any of them optional. Send the previous response's `draft` back and the conversation accumulates. |
+| `userId` | Who is talking. Read only when no complete `brief` carries an identity; long-term preferences are stored per user. |
+
+Nothing is assumed when both are absent. An empty request is a legitimate first turn, and the reply
+asks for the first missing field rather than planning a trip the caller never described:
 
 ```python
-run_trip_chat(request, options, extractor=FixedExtractor(), reply_generator=lambda p: "ok")
+first = run_trip_chat(ChatRequest(tripId="t", message="Tokyo"))
+first.plan  # None
+first.draft  # BriefPatch(destination="Tokyo", ...)
+first.reply  # "When would you like to travel? ... I'll also need ..."
+
+second = run_trip_chat(
+    ChatRequest(
+        tripId="t", message="2026-10-01 to 2026-10-05, 2 people, budget $3000", draft=first.draft
+    )
+)
+second.plan.brief.destination  # "Tokyo"
 ```
+
+Only `destination`, `dates`, `groupSize` and `budgetTotal` are ever asked for; `nationality` changes
+a visa note rather than the plan, so it is optional throughout. `contracts.missing_fields(draft)`
+returns what is still open, and `contracts.draft_problem(draft)` returns the traveller-facing reason
+a partial draft already cannot be planned — an end before its start, or more cities than nights — so
+a bad span is reported the moment it is said instead of after three more questions.
+
+Three seams exist for testing, all keyword-only:
+
+```python
+run_trip_chat(
+    request,
+    options,
+    extractor=FixedExtractor(),
+    reply_generator=lambda p: "ok",
+    question_generator=lambda p: "ok",
+)
+```
+
+`reply_generator` and `question_generator` are separate because the turns have opposite jobs; both
+default to the routed `reply` model, and both fall back to deterministic local text when it fails.
 
 ## `run_orchestrator` — plan a brief directly
 
@@ -88,11 +128,16 @@ for event in stream:
 response = stream.response  # set once the iterator is exhausted
 ```
 
-The brief is checked before any of that runs. `contracts.brief_problem(brief)` returns a
-traveller-facing reason, or `None`, and both entry points raise `ValueError` with it rather than
-letting a specialist discover the problem four agents deep. The form and chat intake call the same
-function, so all three paths refuse an impossible trip — an end before its start, or more cities in
-the `&`-separated destination than the trip has nights — with one message.
+A turn that had nothing to plan is the same object with an empty event stream — no specialist ran —
+so a caller never has to guess which of two response types it is holding. `stream.interrupt` is set
+when the run paused for a human, and `stream.thread_id` is the thread to resume.
+
+Feasibility is checked before any of that runs. `contracts.draft_problem(draft)` and
+`contracts.brief_problem(brief)` return a traveller-facing reason, or `None`, and the entry points
+raise `ValueError` with it rather than letting a specialist discover the problem four agents deep.
+The form and chat intake call the same functions, so all three paths refuse an impossible trip — an
+end before its start, or more cities in the `&`-separated destination than the trip has nights —
+with one message.
 
 ## What comes back
 
@@ -113,6 +158,12 @@ its intermediate state otherwise.
 ## Contracts
 
 Everything crossing a boundary is a Pydantic model in `trip_planner.contracts`: `TripBrief`,
-`ProposalItem`, `AgentProposal`, `RevisionRequest`, `TripSection`, `HitlCheckpoint`,
+`BriefPatch`, `ProposalItem`, `AgentProposal`, `RevisionRequest`, `TripSection`, `HitlCheckpoint`,
 `NegotiationRound`, `TripPlan`, `ChatRequest`, `ChatResponse`. Ports are protocols in
 `trip_planner.ports`.
+
+`TripBrief` is strict — every specialist depends on all of it — while `BriefPatch` is the same
+fields with every one optional. That split is the conversational layer's: a dialogue arrives one
+field at a time, so the draft it accumulates cannot be a `TripBrief` until nothing is missing.
+`demo.py` still holds a complete example trip (relative to today) for scripts and tests; the UI no
+longer starts from it.

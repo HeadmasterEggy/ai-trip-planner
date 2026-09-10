@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -27,9 +27,9 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from trip_planner.chat import run_trip_chat_stream
-from trip_planner.contracts import ChatRequest, TripBrief, TripPlan, brief_problem
+from trip_planner.contracts import BriefPatch, ChatRequest, TripBrief, TripPlan, brief_problem
 from trip_planner.decisions import apply_decision
-from trip_planner.demo import demo_brief
+from trip_planner.demo import TRIP_LENGTH_DAYS, TRIP_START_OFFSET_DAYS
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
@@ -98,9 +98,11 @@ _SESSION = uuid4().hex[:12]
 st.session_state.setdefault("user_id", f"user-{_SESSION}")
 
 st.session_state.setdefault("plan", None)
-st.session_state.setdefault(
-    "brief", demo_brief().model_copy(update={"userId": st.session_state.user_id})
-)
+# What the conversation has collected so far. Empty on purpose: nothing is
+# assumed about the trip until the traveller says it. This used to open on
+# `demo_brief()` -- Tokyo & Kyoto, seven days, $4,000 -- so the first thing a
+# visitor had to do was delete someone else's trip.
+st.session_state.setdefault("draft", BriefPatch())
 st.session_state.setdefault("messages", [])
 st.session_state.setdefault("trip_id", f"trip-{_SESSION}")
 st.session_state.setdefault("pending_escalation", None)
@@ -110,25 +112,33 @@ st.session_state.setdefault("pending_escalation", None)
 # Sidebar: who is on the team, and what this deployment is actually wired to.
 # --------------------------------------------------------------------------
 def render_brief_form() -> TripBrief | None:
-    """The structured path. Chat can change the same fields conversationally."""
-    brief: TripBrief = st.session_state.brief
+    """The structured path, for someone who would rather fill in four fields.
+
+    The fields start neutral rather than seeded from the draft. This form
+    *replaces* the trip instead of editing the one the conversation built, so
+    prefilling it with values that are already known invites a half-edit that is
+    neither the draft nor what is on screen. The chat is where a trip
+    accumulates; this is a shortcut for someone who already knows the answers.
+    """
     today = datetime.now(ZoneInfo("Australia/Sydney")).date()
+    start_default = today + timedelta(days=TRIP_START_OFFSET_DAYS)
+    end_default = start_default + timedelta(days=TRIP_LENGTH_DAYS)
     with st.form("trip"):
         destination = st.text_input(
-            "Destination", value=brief.destination, help="Separate multiple cities with &"
+            "Destination", value="", placeholder="Tokyo & Kyoto", help="Separate cities with &"
         )
         left, right = st.columns(2)
         with left:
-            start = st.date_input("Start", value=datetime.fromisoformat(brief.dates[0]).date())
+            start = st.date_input("Start", value=start_default)
         with right:
-            end = st.date_input("End", value=datetime.fromisoformat(brief.dates[1]).date())
+            end = st.date_input("End", value=end_default)
         people, budget, nationality = st.columns([0.8, 1, 1])
         with people:
-            group = st.number_input("Travellers", 1, 20, brief.groupSize)
+            group = st.number_input("Travellers", 1, 20, 2)
         with budget:
-            total = st.number_input("Budget (USD)", 100, value=int(brief.budgetTotal), step=100)
+            total = st.number_input("Budget (USD)", 100, value=3000, step=100)
         with nationality:
-            passport = st.text_input("Passport", value=brief.nationality or "")
+            passport = st.text_input("Passport", value="", placeholder="Australian")
         submitted = st.form_submit_button("Plan this trip", type="primary", width="stretch")
     if not submitted:
         return None
@@ -165,10 +175,13 @@ with st.sidebar:
 
     # Streamlit's sidebar collapses natively, which is what a filter rail wants:
     # visible when you are adjusting the trip, out of the way when you are
-    # reading the plan. Everything here can also just be said to the planner.
-    st.markdown("### Filters")
-    st.caption("Optional — you can say any of this to the planner instead.")
-    submitted_brief = render_brief_form()
+    # reading the plan. Everything here can also just be said to the planner,
+    # which is why the structured form sits behind an expander: the opening
+    # screen invites a sentence, not four fields.
+    st.markdown("### Trip details")
+    st.caption("Say it in the chat, or fill it in here.")
+    with st.expander("Fill in the details", expanded=False):
+        submitted_brief = render_brief_form()
 
     st.divider()
     with st.expander("Planning team", expanded=False):
@@ -191,34 +204,44 @@ with st.sidebar:
 
     st.divider()
     if st.button("Start a new trip", width="stretch"):
+        # Drop the paused run's checkpoint too, rather than leaving a thread
+        # nobody will ever resume sitting in the process-wide checkpointer.
+        if st.session_state.pending_escalation:
+            forget_thread(st.session_state.pending_escalation["threadId"])
         st.session_state.plan = None
-        st.session_state.brief = demo_brief().model_copy(
-            update={"userId": st.session_state.user_id}
-        )
+        st.session_state.draft = BriefPatch()
         st.session_state.messages = []
+        st.session_state.pending_escalation = None
         st.rerun()
 
-
-st.session_state.setdefault("show_plan", True)
 
 # The plan is a rail, not a fixed column: collapsed it leaves a handle on the
 # edge, exactly like the filter rail on the left. While you are talking to the
 # planner the plan is reference material, and a wide column of it crowds out
 # the conversation it is meant to accompany.
-if st.session_state.show_plan:
-    chat_column, plan_column = st.columns([1, 0.85], gap="large")
-else:
-    chat_column, plan_column = st.columns([1, 0.045], gap="small")
+#
+# Before the first plan there is nothing to put beside the conversation, so the
+# conversation gets the whole width. That is the opening screen: a greeting and a
+# chat box, not a form next to an empty panel.
+plan_column = None
+if st.session_state.plan is not None:
+    st.session_state.setdefault("show_plan", True)
+    if st.session_state.show_plan:
+        chat_column, plan_column = st.columns([1, 0.85], gap="large")
+    else:
+        chat_column, plan_column = st.columns([1, 0.045], gap="small")
 
-with plan_column:
-    if st.button(
-        "›" if st.session_state.show_plan else "‹",
-        key="toggle-plan",
-        help="Hide the trip plan" if st.session_state.show_plan else "Show the trip plan",
-        width="content" if st.session_state.show_plan else "stretch",
-    ):
-        st.session_state.show_plan = not st.session_state.show_plan
-        st.rerun()
+    with plan_column:
+        if st.button(
+            "›" if st.session_state.show_plan else "‹",
+            key="toggle-plan",
+            help="Hide the trip plan" if st.session_state.show_plan else "Show the trip plan",
+            width="content" if st.session_state.show_plan else "stretch",
+        ):
+            st.session_state.show_plan = not st.session_state.show_plan
+            st.rerun()
+else:
+    chat_column = st.container()
 
 
 # --------------------------------------------------------------------------
@@ -299,7 +322,7 @@ def render_escalation() -> None:
             # answer would be sent to a fresh thread, and the run would simply pause
             # again.
             with st.spinner("Recording your call…"):
-                plan_trip(option["label"], st.session_state.brief, decision=option["value"])
+                plan_trip(option["label"], st.session_state.draft, decision=option["value"])
             st.rerun()
 
 
@@ -397,7 +420,7 @@ def render_plan(plan: TripPlan) -> None:
     )
 
 
-def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None) -> None:
+def plan_trip(message: str, draft: BriefPatch | None = None, decision: str | None = None) -> None:
     """Run one turn and stream per-agent progress while it runs.
 
     `decision` resumes a run that paused for an escalation: the paused thread id is
@@ -424,7 +447,12 @@ def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None
         try:
             with st.spinner("The team is planning…"):
                 stream = run_trip_chat_stream(
-                    ChatRequest(tripId=st.session_state.trip_id, message=message, brief=brief),
+                    ChatRequest(
+                        tripId=st.session_state.trip_id,
+                        message=message,
+                        draft=draft,
+                        userId=st.session_state.user_id,
+                    ),
                     OrchestratorOptions(),
                     resume=decision,
                     thread_id=paused["threadId"] if decision and paused else None,
@@ -454,61 +482,98 @@ def plan_trip(message: str, brief: TripBrief | None, decision: str | None = None
             {"threadId": stream.thread_id, **stream.interrupt} if stream.interrupt else None
         )
 
-    st.session_state.plan = response.plan
-    st.session_state.brief = response.plan.brief
+    # The turn always hands back what the conversation now knows; only a turn that
+    # actually planned replaces the plan. A turn that asked a question leaves the
+    # previous plan standing rather than blanking the rail.
+    st.session_state.draft = response.draft
+    if response.plan is not None:
+        st.session_state.plan = response.plan
     st.session_state.messages.append({"role": "assistant", "content": response.reply})
 
 
-if st.session_state.show_plan:
+if plan_column is not None:
     with plan_column:
-        if st.session_state.plan is not None:
-            render_plan(st.session_state.plan)
-        else:
-            st.caption("Your trip plan will appear here once the team has run.")
+        render_plan(st.session_state.plan)
 
 
-EXAMPLES = [
-    "Make it 4 people",
-    "Cut the budget to $2,500",
-    "去京都，2026-10-01 到 2026-10-05，三个人",
-]
+def example_trips() -> list[str]:
+    """Opening one-liners that fill every required field at once.
+
+    Dated from today rather than hard-coded, for the same reason `demo_brief()`
+    is computed rather than imported: a deployment that has been up for months
+    must not open by suggesting a trip that has already happened. The last one
+    is Chinese because the reply follows the language of the request, so that is
+    worth showing on the first screen rather than only in the docs.
+    """
+    start = datetime.now(ZoneInfo("Australia/Sydney")).date() + timedelta(
+        days=TRIP_START_OFFSET_DAYS
+    )
+    return [
+        f"Tokyo & Kyoto, {start} to {start + timedelta(days=7)}, 2 people, budget $4000",
+        (
+            f"Lisbon, {start + timedelta(days=21)} to {start + timedelta(days=26)}, "
+            "4 people, budget $2500"
+        ),
+        f"去京都，{start} 到 {start + timedelta(days=4)}，三个人，预算 5000",
+    ]
+
+
+def render_hero() -> None:
+    """The first screen: a greeting and a chat box, and nothing already decided."""
+    st.markdown(
+        '<div class="tp-hero">'
+        '<div class="tp-hero__mark">✈️</div>'
+        '<div class="tp-hero__title">Where to today?</div>'
+        '<div class="tp-hero__sub">Tell me where you want to go and roughly when. Five '
+        "specialists plan the route, the stays, the food and the costs together, and ask "
+        "whenever something is missing.</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
 
 with chat_column:
-    st.markdown("**Conversation**")
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-
-    if st.session_state.plan is not None:
-        render_decisions(st.session_state.plan)
-        with st.expander("How the team decided", expanded=False):
-            render_reasoning(st.session_state.plan)
-
     if not st.session_state.messages:
+        render_hero()
         # A bare input box does not say what this accepts. Offer the shapes that
-        # actually work, including a non-English one, since the reply follows the
-        # language of the request.
-        st.caption("Ask for a change in plain language. Try one of these:")
-        for index, example in enumerate(EXAMPLES):
+        # actually work, including a non-English one.
+        for index, example in enumerate(example_trips()):
             if st.button(example, key=f"example-{index}", width="stretch"):
                 st.session_state.pending = example
                 st.rerun()
+    else:
+        st.markdown("**Conversation**")
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+
+        if st.session_state.plan is not None:
+            render_decisions(st.session_state.plan)
+            with st.expander("How the team decided", expanded=False):
+                render_reasoning(st.session_state.plan)
 
 # A clicked example and a typed message take the same path from here.
-prompt = st.chat_input("Tell the team what to change…") or st.session_state.pop("pending", None)
+prompt = st.chat_input(
+    "Tell the team what to change…"
+    if st.session_state.plan is not None
+    else "Where would you like to go?"
+) or st.session_state.pop("pending", None)
 st.caption(
     "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
     "act on with the venue or an official source before booking."
 )
 
 if submitted_brief is not None:
+    # The form is a complete answer, so it replaces the draft wholesale and the
+    # turn below is an ordinary planning turn.
+    st.session_state.draft = BriefPatch.from_brief(submitted_brief)
     plan_trip(
         f"Plan {submitted_brief.destination} from {submitted_brief.dates[0]} to "
         f"{submitted_brief.dates[1]} for {submitted_brief.groupSize} travellers "
         f"with a budget of USD {submitted_brief.budgetTotal:,.0f}.",
-        submitted_brief,
+        st.session_state.draft,
     )
     st.rerun()
 elif prompt:
-    plan_trip(prompt, st.session_state.brief)
+    plan_trip(prompt, st.session_state.draft)
     st.rerun()

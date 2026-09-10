@@ -7,6 +7,40 @@ The file is presentation only. It imports `trip_planner` and calls `run_orchestr
 logic lives in it, which is why the same code runs from `pytest` or a script without importing
 Streamlit at all.
 
+## The opening screen
+
+The first screen is a greeting and a chat box, and nothing else. It used to open on `demo_brief()` —
+Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first act was to delete
+someone else's trip before saying where they actually wanted to go.
+
+Nothing is assumed until the traveller says it. The session holds a `BriefPatch` (a draft, every
+field optional) rather than a brief, and it starts empty; the plan rail is not rendered at all,
+because with nothing planned there is nothing to collapse and the conversation can have the full
+width. The only suggestion on screen is three example one-liners, dated from today so a
+long-running deployment never opens by proposing a trip that has already happened.
+
+A turn now has two shapes. If the draft is complete the orchestrator runs and the reply describes
+the plan. If something required is still missing, nothing is planned at all: the reply asks for the
+first missing field — by name, in the traveller's language — and the answer is merged into the draft
+for the next turn. "Tokyo" alone is enough to start, because the local parser reads a short opening
+message that named no other field as the destination; a greeting is not, and mid-conversation words
+like "cheaper" are never read as a place.
+
+```text
+Where to today?
+[ Tokyo & Kyoto, 2026-11-10 to 2026-11-17, 2 people, budget $4000 ]
+> Tokyo
+  When would you like to travel? Dates as YYYY-MM-DD … I'll also need how many people
+  are travelling and your total budget in USD.
+> 2026-11-10 to 2026-11-17, 2 people, budget $4000
+  … five specialists run …
+```
+
+**Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. The
+structured path still exists, but it sits behind a collapsed expander in the sidebar, and filling it
+in *replaces* the draft rather than editing it — prefilling it from the conversation would invite a
+half-edit that is neither the draft nor what is on screen.
+
 ## Per-agent progress
 
 A planning run takes tens of seconds and involves five specialists across up to three rounds.
@@ -51,13 +85,15 @@ pins both halves, including that no module under `trip_planner/` imports Streaml
 
 ## Whose session is it
 
-Each session derives its own `trip_id` and `user_id` (`_SESSION` in the entry point) and puts them on
-the brief. That matters because the memory store and the checkpointer are process-wide and key by
-those ids and nothing else: the ids used to be a fixed `trip-demo`/`demo-user` pair, which meant that
-on a shared deployment one traveller's confirmed stay could appear in the next one's plan.
+Each session derives its own `trip_id` and `user_id` (`_SESSION` in the entry point) and sends them
+on every chat request, so they reach the brief the specialists plan against. That matters because
+the memory store and the checkpointer are process-wide and key by those ids and nothing else: the
+ids used to be a fixed `trip-demo`/`demo-user` pair, which meant that on a shared deployment one
+traveller's confirmed stay could appear in the next one's plan.
 
 Both stores are bounded as well — the memory store evicts its oldest trip and user at a cap, and a
-paused run's checkpoint is dropped when the pause is answered or superseded.
+paused run's checkpoint is dropped when the pause is answered or superseded, including by
+`Start a new trip`.
 
 ## Three views of one plan
 
@@ -100,15 +136,16 @@ Two rails around a conversation.
 
 The **left rail** is the sidebar, which Streamlit collapses natively: visible while you are
 adjusting the trip, out of the way while you are reading the plan. Nothing in it is required —
-every field can simply be said to the planner, which is why the form no longer leads the page. The
-brand sits at the top of it, because that is already the page's top-left corner and a full-width
-title was spending vertical space the conversation needed.
+every field can simply be said to the planner, which is why the form is a collapsed expander rather
+than the front of the page. The brand sits at the top of it, because that is already the page's
+top-left corner and a full-width title was spending vertical space the conversation needed.
 
-The **right rail** holds the plan and collapses the same way, through a chevron on its edge.
-Streamlit has no second sidebar, so it is two column ratios and a session flag: `[1, 0.85]` open,
-`[1, 0.045]` closed.
+The **right rail** holds the plan and collapses the same way, through a chevron on its edge. It does
+not exist until there is a plan. Streamlit has no second sidebar, so it is two column ratios and a
+session flag: `[1, 0.85]` open, `[1, 0.045]` closed.
 
-The **conversation** sits between them and takes the width the plan gives back.
+The **conversation** sits between them and takes the width the plan gives back — all of it, before
+the first plan.
 
 Two details that were wrong first time:
 
