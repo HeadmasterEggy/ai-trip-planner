@@ -8,15 +8,17 @@ negotiated, act on what needs a decision, and take the plan with you.
 1. Five specialists behind one `Specialist` protocol, three model-backed and two deterministic.
 2. LangGraph orchestration with conflict detection, targeted revision and a round limit.
 3. Supervisor delegation through typed tools, with deterministic dispatch as the fallback.
-4. Conversational intake: a message becomes an explicit brief patch, in English or Chinese.
+4. Conversational intake: a message becomes an explicit patch of a partial trip (`BriefPatch`), in
+   English or Chinese. A turn plans only once nothing required is missing; otherwise it asks for the
+   next field, so an empty session holds no trip at all and the first screen is a greeting.
 5. A UI that shows the negotiation — day-by-day timeline, budget breakdown, round-by-round record.
 6. Executable HITL: a stay choice is offered, recorded as a confirmed preference and re-planned
    around, and it outranks a later budget revision.
 7. Budget negotiation that asks for the actual shortfall, apportioned by share of the spend, and
    stops as soon as a revision changes nothing rather than spending the remaining rounds.
-8. Brief feasibility checked once, up front (`contracts.brief_problem`): the form, chat intake and
-   the orchestrator all ask it, so an unplannable brief is refused with a reason instead of failing
-   inside a specialist after the other four have run.
+8. Brief feasibility checked once, up front (`contracts.brief_problem` and `draft_problem`): the
+   form, chat intake and the orchestrator all ask it, so an unplannable brief is refused with a
+   reason instead of failing inside a specialist after the other four have run.
 9. Framework alignment: the orchestration now matches the documented patterns — role-based model
    routing, per-run injection with one agent and one graph per process, worker results in graph
    state, official resilience middleware, progress as a stream, and a checkpointer that pauses where
@@ -24,6 +26,8 @@ negotiated, act on what needs a decision, and take the plan with you.
    assumptions it corrected.
 10. A run says what each section cost: which route would answer it and how long it took, in the
    reasoning view and in the exported plan.
+11. An opening screen that assumes nothing: no prefilled demo trip, a greeting instead of a form, and
+    a conversation that collects the trip one answer at a time and asks for whatever is missing.
 
 ## Next
 

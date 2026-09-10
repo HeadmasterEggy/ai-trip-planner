@@ -27,12 +27,14 @@ two protocols injected into every specialist.
 classDiagram
   direction TB
   class StreamlitApp {
+    +render_hero() None
     +render_plan(plan) None
-    +plan_trip(message, brief) None
+    +plan_trip(message, draft) None
   }
   class TripChat {
     +run_trip_chat(request, options) ChatResponse
-    -_extract_patch(message, current) BriefPatch
+    -_extract_patch(message, draft) BriefPatch
+    -run_trip_chat_stream(request) ChatStream
   }
   class OrchestratorGraph {
     -max_rounds: int

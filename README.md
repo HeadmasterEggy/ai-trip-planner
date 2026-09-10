@@ -112,19 +112,22 @@ docs/                               Architecture, orchestration and UI notes
 
 ## Talking to it
 
-The planner is conversational. A message is turned into an explicit patch of the trip brief, the
-orchestrator re-plans, and the reply is written from the resulting plan in the traveller's own
-language:
+The planner is conversational, and it starts empty. There is no prefilled demo trip: describe where
+you want to go and the planner asks for whatever is still missing, in your own language, rather than
+assuming a destination, a date or a budget.
 
 ```
-去京都，2026-10-01 到 2026-10-05，三个人，预算 3000
-make it 4 people instead
+Tokyo
+2026-10-01 to 2026-10-05, 2 people, budget $4000
+去京都，2026-10-01 到 2026-10-05，三个人，预算 5000
 ```
 
-Only fields the traveller actually stated are changed. Inferring a date or a budget they did not
-give is worse than asking, because the plan then drifts from the request without anyone noticing.
-Extraction runs through the routed model with a local bilingual parser behind it, so the chat works
-with no API key at all.
+A message becomes an explicit patch of the trip, the patch is merged into what the conversation has
+collected, and the orchestrator runs only once nothing required is missing. Only fields the
+traveller actually stated are changed. Inferring a date or a budget they did not give is worse than
+asking, because the plan then drifts from the request without anyone noticing. Extraction runs
+through the routed model with a local bilingual parser behind it, so the chat works with no API key
+at all — including reading a bare opening message like `Tokyo` as the destination.
 
 ## Scope
 

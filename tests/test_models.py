@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from trip_planner.chat import BriefPatch, create_model_extractor, run_trip_chat
-from trip_planner.contracts import ChatRequest, RevisionRequest
+from trip_planner.chat import create_model_extractor, run_trip_chat
+from trip_planner.contracts import BriefPatch, ChatRequest, RevisionRequest
 from trip_planner.demo import DEMO_BRIEF
 from trip_planner.memory import InMemoryStore
 from trip_planner.models import MODEL_ROUTING, describe_route
@@ -106,7 +106,7 @@ def test_brief_extraction_asks_for_its_own_route(asked):
 
 def test_a_chat_turn_requests_the_reply_route(asked):
     class FixedExtractor:
-        def extract(self, message: str, current: object) -> BriefPatch:
+        def extract(self, message: str, current: BriefPatch) -> BriefPatch:
             return BriefPatch()
 
     run_trip_chat(

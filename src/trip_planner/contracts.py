@@ -55,7 +55,12 @@ def _iso_date(value: str) -> date | None:
 
 
 class TripBrief(BaseModel):
-    """The structured request the orchestrator hands to every specialist."""
+    """The structured request the orchestrator hands to every specialist.
+
+    Strict on purpose: every specialist depends on all of it. A conversation
+    arrives one field at a time and accumulates a `BriefPatch` instead, which
+    becomes this only once nothing is missing.
+    """
 
     tripId: str
     userId: str = "demo-user"
@@ -64,6 +69,90 @@ class TripBrief(BaseModel):
     groupSize: Annotated[int, Field(gt=0)]
     budgetTotal: Annotated[float, Field(gt=0)]
     nationality: str | None = None
+
+
+# Every field a patch can carry, and the subset a plan cannot be built without.
+# `nationality` is deliberately absent from the second: it changes a visa note,
+# not whether the trip can be planned, so a traveller who never mentions a
+# passport still gets a complete plan instead of a question.
+BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
+REQUIRED_BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal")
+
+
+class BriefPatch(BaseModel):
+    """A partial trip: only the fields that have actually been stated.
+
+    The conversational layer collects one field at a time, so it cannot hold a
+    `TripBrief` while it is still asking questions. This is what it holds, and
+    being all-optional is the point -- a patch never claims to be a brief.
+    """
+
+    destination: str | None = None
+    dates: tuple[str, str] | None = None
+    groupSize: int | None = Field(default=None, gt=0)
+    budgetTotal: float | None = Field(default=None, gt=0)
+    nationality: str | None = None
+
+    @classmethod
+    def from_brief(cls, brief: TripBrief) -> BriefPatch:
+        """The patch a complete brief already satisfies."""
+        return cls(**{field: getattr(brief, field) for field in BRIEF_FIELDS})
+
+    def is_empty(self) -> bool:
+        """True when nothing has been stated at all."""
+        return not any(getattr(self, field) for field in BRIEF_FIELDS)
+
+
+def merge_draft(draft: BriefPatch | None, patch: BriefPatch) -> BriefPatch:
+    """`draft` with the fields `patch` actually carries applied over it.
+
+    Nothing is validated here: a draft is allowed to be incomplete, and being
+    asked for the next field is not an error. `draft_problem` and
+    `missing_fields` decide what happens to a draft next.
+    """
+    base = draft or BriefPatch()
+    return BriefPatch(**{**base.model_dump(), **patch.model_dump(exclude_none=True)})
+
+
+def missing_fields(draft: BriefPatch | None) -> list[str]:
+    """Which required fields the draft still lacks, in the order worth asking.
+
+    The order is the order a person would ask in -- where, then when, then who,
+    then how much -- and it is also the order the offline question reads.
+    """
+    return [field for field in REQUIRED_BRIEF_FIELDS if draft is None or not getattr(draft, field)]
+
+
+def dates_problem(dates: tuple[str, str]) -> str | None:
+    """Why this date span cannot be planned, or None. Answerable on its own."""
+    start, end = _iso_date(dates[0]), _iso_date(dates[1])
+    if start is None or end is None:
+        return "Trip dates must be real dates in YYYY-MM-DD format."
+    if end <= start:
+        return "Trip end date must be after the start date."
+    return None
+
+
+def cities_nights_problem(destination: str, dates: tuple[str, str]) -> str | None:
+    """Why these destinations cannot be covered in these nights, or None.
+
+    Assumes the dates themselves have already been checked: with an unparseable
+    or reversed span there is no night count to compare against.
+    """
+    start, end = _iso_date(dates[0]), _iso_date(dates[1])
+    if start is None or end is None:
+        return None
+    try:
+        names = cities(destination)
+    except ValueError as error:
+        return str(error)
+    nights = (end - start).days
+    if nights < len(names):
+        return (
+            f"{len(names)} destinations need at least {len(names)} nights; "
+            f"this trip is {nights} night(s) long."
+        )
+    return None
 
 
 def brief_problem(brief: TripBrief) -> str | None:
@@ -75,22 +164,37 @@ def brief_problem(brief: TripBrief) -> str | None:
     after the other four had already run, and the traveller got an internal
     error instead of a reason.
     """
-    start, end = _iso_date(brief.dates[0]), _iso_date(brief.dates[1])
-    if start is None or end is None:
-        return "Trip dates must be real dates in YYYY-MM-DD format."
-    if end <= start:
-        return "Trip end date must be after the start date."
-    nights = (end - start).days
-    try:
-        names = cities(brief.destination)
-    except ValueError as error:
-        return str(error)
-    if nights < len(names):
-        return (
-            f"{len(names)} destinations need at least {len(names)} nights; "
-            f"this trip is {nights} night(s) long."
-        )
-    return None
+    return dates_problem(brief.dates) or cities_nights_problem(brief.destination, brief.dates)
+
+
+def draft_problem(draft: BriefPatch) -> str | None:
+    """The part of `brief_problem` a still-partial draft can already answer.
+
+    Checked before the draft is complete so that a bad span, or two cities in
+    one night, is reported the moment it is said rather than after three more
+    questions have been answered.
+    """
+    if draft.dates is None:
+        return None
+    problem = dates_problem(draft.dates)
+    if problem:
+        return problem
+    if not draft.destination:
+        return None
+    return cities_nights_problem(draft.destination, draft.dates)
+
+
+def brief_from_draft(draft: BriefPatch, *, trip_id: str, user_id: str) -> TripBrief:
+    """The validated brief a complete draft describes.
+
+    Raises `ValueError` when a required field is still missing: a caller that
+    reaches the orchestrator with a partial draft skipped `missing_fields`, and
+    that is a bug rather than a conversation state.
+    """
+    missing = missing_fields(draft)
+    if missing:
+        raise ValueError(f"The trip is still missing {', '.join(missing)}.")
+    return TripBrief(**{**draft.model_dump(), "tripId": trip_id, "userId": user_id})
 
 
 class ProposalItem(BaseModel):
@@ -280,21 +384,37 @@ class UserPreference(BaseModel):
 
 # ---------------------------------------------------------------------------
 # The chat contract. Frozen shape: streaming can be added without changing it,
-# because the final frame of a stream is still one ChatResponse.
+# because the final frame of a stream is still one ChatResponse. A turn that had
+# nothing to plan is that same frame with `plan=None`, so a caller never has to
+# guess which of two response types it is holding.
 # ---------------------------------------------------------------------------
 
 
 class ChatRequest(BaseModel):
     tripId: str
     message: Annotated[str, Field(min_length=1)]
-    # Optional so a caller can rely on the demo brief. The UI sends the latest
-    # brief so a stateless request can still apply an incremental edit.
+    # A complete, already-validated brief: the form path, or any caller that
+    # holds one. Preferred over `draft` when both are sent.
     brief: TripBrief | None = None
+    # What a conversation has collected so far. The UI sends it back on every
+    # turn, so a stateless request still accumulates and the next missing field
+    # can be asked for. An empty request is legitimate -- it is the first screen
+    # -- and is never quietly replaced by a demo trip.
+    draft: BriefPatch | None = None
+    # Who is talking. Read only when no complete `brief` already carries an
+    # identity, since long-term preferences are stored per user.
+    userId: str = "demo-user"
 
 
 class ChatResponse(BaseModel):
     reply: str  # assistant text for the chat stream
-    plan: TripPlan  # the fresh aggregated plan for the trip panel
+    # None while the draft is still missing something a plan needs. The reply
+    # asks for it, and there is nothing to render yet.
+    plan: TripPlan | None = None
+    # The trip after this turn, complete or not, so a caller can seed a form
+    # from what the conversation collected and send it back with the next
+    # message.
+    draft: BriefPatch
 
 
 @dataclass

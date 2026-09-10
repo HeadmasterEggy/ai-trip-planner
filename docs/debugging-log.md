@@ -264,6 +264,54 @@ dispatch) was not the path that was shipped (key present, supervisor).
 
 ---
 
+## 12. An empty request that could not be empty
+
+**Symptom.** The first screen had to become a greeting and a chat box, like MindTrip's: nothing
+planned, nothing filled in, until the traveller says something. Removing the prefilled demo trip
+from the sidebar form was a five-line change. It did not work.
+
+**Why it misled.** The demo trip looked like a default *value*. It was actually a default *state*:
+`base = request.brief or demo_brief()` in `run_trip_chat_stream` meant "the caller said nothing" and
+"the caller wants Tokyo & Kyoto, seven days, $4,000" were the same request. `ChatResponse.plan` was
+non-optional for the same reason — if a request always has a brief, a turn always produces a plan —
+so `ChatStream.__iter__` raised `RuntimeError` when one was missing, and every caller was written to
+expect a plan it had not asked for.
+
+**Cause.** Three contracts encoded "a trip is always complete and always known":
+
+- `TripBrief` has no optional fields, so it cannot represent a trip being described.
+- `ChatRequest` had `brief` or nothing, so a partially described trip had nowhere to live.
+- `ChatRequest.message` was the only incremental input, and the local parser reads only *explicit*
+  updates. `"Tokyo"` matches none of its patterns.
+
+The third one was the interesting failure. The new opening screen invites exactly one thing — say
+where you want to go — and the message it invites is the one the offline parser drops on the floor.
+With a key configured the extraction model reads it; without one the assistant answered "Tokyo" with
+"Where would you like to go?". Same shape as entry #11: correct on the path that is exercised with a
+key, wrong on the path CI and a fresh checkout take.
+
+**Fix.** Split the partial trip out as its own contract. `BriefPatch` is the same five fields with
+every one optional; `TripBrief` stays strict. `ChatRequest` takes a `draft` as well as a `brief`,
+`ChatResponse` returns the `draft` and makes `plan` optional, and `contracts.missing_fields` decides
+whether a turn plans or asks. `demo_brief()` is no longer reachable from a request at all.
+
+`ChatStream` keeps its invariant rather than losing it: a turn with a complete draft that produces no
+plan still raises, because that is an implementation error. Only the asking turn — the one that knows
+which fields are missing — is allowed to finish without a plan.
+
+The bare opening message is handled where the draft is, not in the parser: `_opening_destination` is
+consulted only when the patch named nothing *and* the draft is still empty, and it rejects short
+phrases whose first word is conversational (`hello`, `help`, `somewhere`, `cheaper`). Putting it in
+the parser would have made `"cheaper"` halfway through a conversation into a city.
+
+**How it was found.** By writing the `AppTest` for the opening flow before believing the feature:
+`at.chat_input[0].set_value("Tokyo").run()` followed by an assertion that the draft's destination is
+`Tokyo`. It failed with `destination=None`, which is what surfaced that the parser and the new screen
+disagreed about what a first message is. The draft-completeness tests (145 now, 131 before) then
+pinned each field's transition one at a time.
+
+---
+
 ## Recurring lessons
 
 **A silent fallback is worse than a crash.** Most of these took time because the
