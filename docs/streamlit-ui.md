@@ -9,33 +9,35 @@ Streamlit at all.
 
 ## The opening screen
 
-The first screen is a greeting, a chat box, and a rail that says it has nothing to list. It used to
-open on `demo_brief()` — Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first
-act was to delete someone else's trip before saying where they actually wanted to go.
+The first screen is a greeting, a chat box, and the logo in the top-left corner. It used to open on
+`demo_brief()` — Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first act was
+to delete someone else's trip before saying where they actually wanted to go.
 
 Nothing is assumed until the traveller says it. The session holds a `BriefPatch` (a draft, every
-field optional) rather than a brief, and it starts empty. The plan rail is not rendered at all,
-because there is no plan to read. No example chips either — a suggestion that fills the page is one
-more thing to read before saying where you want to go, and the chat box already says what it wants.
+field optional) rather than a brief, and it starts empty. Neither rail is rendered yet: the plan rail
+because there is no plan to read, the nav rail because there is nothing to navigate to. No example
+chips either — a suggestion that fills the page is one more thing to read before saying where you
+want to go, and the chat box already says what it wants.
 
 A turn has two shapes. If the draft is complete the orchestrator runs, the reply describes the plan,
-and the plan rail arrives with it. If something required is still missing, nothing is planned at all:
+and both rails arrive with it. If something required is still missing, nothing is planned at all:
 the reply asks for the first missing field — by name, in the traveller's language — and the answer is
 merged into the draft for the next turn. "Tokyo" alone is enough to start, because the local parser
 reads a short opening message that named no other field as the destination; a greeting is not, and
 mid-conversation words like "cheaper" are never read as a place.
 
 ```text
-  ┌ rail ────────────┐
-  │ ✈️ AI Trip Planner│        ✈️
-  │ [ Search… ]      │   Where to today?
-  │ 🧳 Trip details   │   Tell me where you want to go and roughly when. …
-  │ 🤖 Planning team  │   [ Where would you like to go? ]
-  │ ⚙️ Setup          │
-  │ No chats yet.    │  > Tokyo
-  │ [ ＋ New chat ]   │    When would you like to travel? Dates as YYYY-MM-DD …
-  └──────────────────┘  > 2026-11-10 to 2026-11-17, 2 people, budget $4000
-                          … five specialists run, and the plan rail appears …
+[logo]                            ← the top-left corner, on every screen
+                            ✈️
+                      Where to today?
+                      Tell me where you want to go and roughly when. …
+                      [ Where would you like to go? ]
+
+> Tokyo
+  When would you like to travel? Dates as YYYY-MM-DD … I'll also need how many
+  people are travelling and your total budget in USD.
+> 2026-11-10 to 2026-11-17, 2 people, budget $4000
+  … five specialists run, and both rails appear …
 ```
 
 **Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. The
@@ -62,7 +64,7 @@ left with it would strand the trip it had just parked. So the gate is "a plan, o
 navigate to".
 
 ```text
-✈️ AI Trip Planner        brand
+[logo] AI Trip Planner    brand: `st.logo` draws the mark, this is its name
 [ 🔍 Search… ]            filters the two lists below, by title and by transcript
 🧳 Trip details ▸          the structured form
 🤖 Planning team ▸         the five specialists
@@ -75,6 +77,17 @@ CHATS            2        a conversation still being collected
      In progress
 [ ＋ New chat ]            pinned to the bottom
 ```
+
+**The mark and the name are two elements, because Streamlit's logo API takes an image and nothing
+else.** `st.logo` pins the mark to the top-left corner of the app — inside the rail when it is open,
+in the header when it is not, so it is there from the first screen and does not arrive with the
+first plan. The name heads the rail below it. The favicon is the same file.
+
+The file it serves is a 128px render, not the one supplied: that one is **837KB** — a 1279×1230 PNG
+inside an SVG wrapper, so not vector art — and `st.logo` inlines an SVG's bytes into every rerun,
+which measured at **1.49MB per rerun**. A PNG goes through Streamlit's media endpoint instead: one
+14.6KB fetch that the browser caches. `assets/README.md` has the command that regenerates it, and
+`tests/test_assets.py` keeps it from growing back.
 
 A row's title is derived, never stored: the destination once there is a plan, otherwise the first
 thing the traveller said, otherwise `Untitled`. The split into `Trips` and `Chats` falls out of the
