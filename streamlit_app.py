@@ -8,6 +8,7 @@ from a test or a script without importing Streamlit at all.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import sys
@@ -40,6 +41,14 @@ from trip_planner.contracts import (
 from trip_planner.decisions import apply_decision
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
+from trip_planner.ui.history import (
+    Conversation,
+    forget,
+    matching,
+    remember,
+    snapshot,
+    split,
+)
 from trip_planner.ui.render import (
     agent_row,
     budget_block,
@@ -105,6 +114,16 @@ _load_cloud_secrets()
 _SESSION = uuid4().hex[:12]
 st.session_state.setdefault("user_id", f"user-{_SESSION}")
 
+
+def _trip_id(seq: int) -> str:
+    """One id per conversation in this session.
+
+    Memory and the checkpointer key by `tripId` and nothing else, so two
+    conversations inside one browser tab must not share one.
+    """
+    return f"trip-{_SESSION}-{seq}"
+
+
 st.session_state.setdefault("plan", None)
 # What the conversation has collected so far. Empty on purpose: nothing is
 # assumed about the trip until the traveller says it. This used to open on
@@ -112,13 +131,17 @@ st.session_state.setdefault("plan", None)
 # visitor had to do was delete someone else's trip.
 st.session_state.setdefault("draft", BriefPatch())
 st.session_state.setdefault("messages", [])
-st.session_state.setdefault("trip_id", f"trip-{_SESSION}")
+st.session_state.setdefault("chat_seq", 0)
+st.session_state.setdefault("trip_id", _trip_id(0))
+# The conversations that are not on screen. Session state holds one at a time;
+# this is the rest of the rail, newest first.
+st.session_state.setdefault("history", [])
 st.session_state.setdefault("pending_escalation", None)
 
 
 # --------------------------------------------------------------------------
-# The rails. Neither exists before the first plan: the opening screen is the
-# conversation, and a rail is only worth its space once it describes something.
+# The rail. Navigation rather than a form: the conversation list, a way to start
+# a new one, and the trip's own details behind it.
 # --------------------------------------------------------------------------
 def render_brief_form() -> TripBrief | None:
     """The structured path, for someone who would rather fill in four fields.
@@ -131,21 +154,34 @@ def render_brief_form() -> TripBrief | None:
     today = datetime.now(ZoneInfo("Australia/Sydney")).date()
     with st.form("trip"):
         destination = st.text_input(
-            "Destination", value="", placeholder="e.g. Tokyo & Kyoto", help="Separate cities with &"
+            "Destination",
+            key="form-destination",
+            value="",
+            placeholder="e.g. Tokyo & Kyoto",
+            help="Separate cities with &",
         )
         left, right = st.columns(2)
         with left:
-            start = st.date_input("Start", value=None)
+            start = st.date_input("Start", key="form-start", value=None)
         with right:
-            end = st.date_input("End", value=None)
-        people, budget, nationality = st.columns([0.8, 1, 1])
-        with people:
-            group = st.number_input("Travellers", 1, 20, value=None, placeholder="2")
-        with budget:
-            total = st.number_input("Budget (USD)", 100, value=None, step=100, placeholder="3000")
-        with nationality:
-            passport = st.text_input("Passport", value="", placeholder="e.g. Australian")
-        submitted = st.form_submit_button("Plan this trip", type="primary", width="stretch")
+            end = st.date_input("End", key="form-end", value=None)
+        # Two to a row at most: the rail is ~250px, and three inputs in it wrap
+        # their own labels ("Travell / ers").
+        left, right = st.columns(2)
+        with left:
+            group = st.number_input(
+                "Travellers", 1, 20, key="form-group", value=None, placeholder="2"
+            )
+        with right:
+            total = st.number_input(
+                "Budget (USD)", 100, key="form-budget", value=None, step=100, placeholder="3000"
+            )
+        passport = st.text_input(
+            "Passport", key="form-passport", value="", placeholder="e.g. Australian"
+        )
+        submitted = st.form_submit_button(
+            "Plan this trip", key="form-submit", type="primary", width="stretch"
+        )
     if not submitted:
         return None
 
@@ -174,72 +210,184 @@ def render_brief_form() -> TripBrief | None:
     return brief
 
 
-def render_sidebar() -> TripBrief | None:
-    """The left rail: the trip's details, the team, and what this is wired to.
+def remember_active() -> None:
+    """Copy the conversation on screen into the rail, if it has anything in it.
 
-    Streamlit's sidebar collapses natively, which is what a filter rail wants:
-    visible while you are adjusting the trip, out of the way while you are reading
-    the plan. Everything here can also just be said to the planner, which is why
-    the structured form is a collapsed expander rather than the front of the page.
+    Called before the screen is replaced rather than after, because the state it
+    copies is about to be overwritten. A conversation nobody has said anything in
+    is not worth a row, so it is dropped instead of listed as "Untitled".
+    """
+    if not st.session_state.messages:
+        return
+    st.session_state.history = remember(
+        st.session_state.history,
+        snapshot(
+            st.session_state.trip_id,
+            st.session_state.messages,
+            st.session_state.draft,
+            st.session_state.plan,
+        ),
+    )
+
+
+def drop_pause() -> None:
+    """Forget a paused run whose thread belongs to the conversation being left.
+
+    Keeping it would let the next escalation answer resume a thread for a trip
+    that is no longer on screen.
+    """
+    paused = st.session_state.get("pending_escalation")
+    if paused:
+        forget_thread(paused["threadId"])
+    st.session_state.pending_escalation = None
+
+
+def new_chat() -> None:
+    """Park the current conversation in the rail and start an empty one."""
+    remember_active()
+    drop_pause()
+    st.session_state.plan = None
+    st.session_state.draft = BriefPatch()
+    st.session_state.messages = []
+    st.session_state.chat_seq += 1
+    st.session_state.trip_id = _trip_id(st.session_state.chat_seq)
+    st.rerun()
+
+
+def open_conversation(trip_id: str) -> None:
+    """Put a conversation from the rail back on screen.
+
+    It leaves the rail as it arrives: the open conversation is drawn as the
+    highlighted row, so a copy of it in the list would be a second, clickable
+    copy of what is already in front of the traveller.
+    """
+    remember_active()
+    drop_pause()
+    reopened = next(c for c in st.session_state.history if c.tripId == trip_id)
+    st.session_state.history = forget(st.session_state.history, trip_id)
+    st.session_state.trip_id = reopened.tripId
+    st.session_state.messages = list(reopened.messages)
+    st.session_state.draft = reopened.draft
+    st.session_state.plan = reopened.plan
+    st.rerun()
+
+
+def render_history() -> None:
+    """The conversation list, in two sections, filtered by the search box.
+
+    Rows are buttons because every one of them does something. There is
+    deliberately no Explore/Saved/Updates: this app has no such features, and a
+    row that cannot be clicked is a lie about what the product does.
+    """
+    query = st.session_state.get("rail-search", "")
+    live = snapshot(
+        st.session_state.trip_id,
+        st.session_state.messages,
+        st.session_state.draft,
+        st.session_state.plan,
+    )
+    # The open conversation belongs in the list -- it is where the highlight says
+    # "you are here" -- but only once it has something to show.
+    active = live if st.session_state.messages and matching([live], query) else None
+    trips, chats = split(matching(st.session_state.history, query))
+    if active is not None:
+        (trips if active.is_trip else chats).insert(0, active)
+
+    with st.container(key="rail-history"):
+        if not trips and not chats:
+            empty = "No matches." if query.strip() else "No chats yet."
+            st.markdown(f'<div class="tp-rail__empty">{empty}</div>', unsafe_allow_html=True)
+            return
+        for label, rows in (("Trips", trips), ("Chats", chats)):
+            if not rows:
+                continue
+            st.markdown(
+                f'<div class="tp-rail__section">{label}'
+                f'<span class="tp-rail__badge">{len(rows)}</span></div>',
+                unsafe_allow_html=True,
+            )
+            for conversation in rows:
+                render_row(conversation, is_active=conversation is active)
+                st.caption(conversation.subtitle)
+
+
+def render_row(conversation: Conversation, *, is_active: bool) -> None:
+    """One row: the open conversation as a label, the others as buttons."""
+    if is_active:
+        # The title comes from the traveller's own words, so it is escaped before
+        # it goes anywhere near `unsafe_allow_html`.
+        st.markdown(
+            f'<div class="tp-rail__active">{conversation.icon} '
+            f"{html.escape(conversation.title)}</div>",
+            unsafe_allow_html=True,
+        )
+    elif st.button(
+        f"{conversation.icon} {conversation.title}",
+        key=f"open-{conversation.tripId}",
+        help=conversation.title,
+    ):
+        open_conversation(conversation.tripId)
+
+
+def render_rail() -> TripBrief | None:
+    """The left rail: navigation, history, and the trip's own details.
+
+    It is always there, because it is navigation rather than trip content -- the
+    plan rail still waits for a plan. Nothing in it is invented either: an empty
+    history says so, and the form starts empty.
     """
     with st.sidebar:
-        # The brand sits here rather than above the main column: at the top of the
-        # sidebar it is already the page's top-left corner, and the vertical space
-        # a full-width title took belongs to the conversation.
         st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
-        st.caption(
-            "Five specialists negotiate your trip; conflicts are re-planned before you see it."
+        st.text_input(
+            "Search trips and chats",
+            key="rail-search",
+            placeholder="Search…",
+            label_visibility="collapsed",
         )
-        st.divider()
 
-        st.markdown("### Trip details")
-        st.caption("Say it in the chat, or fill it in here.")
-        with st.expander("Fill in the details", expanded=False):
-            submitted_brief = render_brief_form()
-
-        st.divider()
-        with st.expander("Planning team", expanded=False):
-            for specialist in ALL_SPECIALISTS:
-                st.markdown(
-                    f"**{specialist.label}** &nbsp;`{specialist.name}`", unsafe_allow_html=True
+        with st.container(key="rail-nav"):
+            with st.expander("🧳 Trip details", expanded=False):
+                st.caption("Say it in the chat, or fill it in here.")
+                submitted_brief = render_brief_form()
+            with st.expander("🤖 Planning team", expanded=False):
+                for specialist in ALL_SPECIALISTS:
+                    st.markdown(
+                        f"**{specialist.label}** &nbsp;`{specialist.name}`",
+                        unsafe_allow_html=True,
+                    )
+            with st.expander("⚙️ Setup", expanded=False):
+                st.caption("Model routing")
+                for task, provider in MODEL_ROUTING.items():
+                    st.caption(f"`{task}` → {provider}")
+                keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
+                st.caption(
+                    "Live models configured."
+                    if keyed
+                    else "No model key set — specialists use their deterministic fallbacks."
                 )
-        st.caption("Model routing")
-        for task, provider in MODEL_ROUTING.items():
-            st.caption(f"`{task}` → {provider}")
+                mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
+                st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
+                if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
+                    st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
 
-        keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
-        st.caption(
-            "Live models configured."
-            if keyed
-            else "No model key set — specialists use their deterministic fallbacks."
-        )
-        mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
-        st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
-        if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
-            st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
+        render_history()
 
-        st.divider()
-        if st.button("Start a new trip", width="stretch"):
-            # Drop the paused run's checkpoint too, rather than leaving a thread
-            # nobody will ever resume sitting in the process-wide checkpointer.
-            if st.session_state.pending_escalation:
-                forget_thread(st.session_state.pending_escalation["threadId"])
-            st.session_state.plan = None
-            st.session_state.draft = BriefPatch()
-            st.session_state.messages = []
-            st.session_state.pending_escalation = None
-            st.rerun()
+        # Pinned to the bottom of the rail: the primary action has to be
+        # reachable without scrolling back up a long history.
+        with st.container(key="rail-new-chat"):
+            if st.button("＋ New chat", key="new-chat", type="primary"):
+                new_chat()
     return submitted_brief
 
 
 # The plan is a rail, not a fixed column: collapsed it leaves a handle on the
-# edge, exactly like the filter rail on the left. While you are talking to the
+# edge, exactly like the nav rail on the left. While you are talking to the
 # planner the plan is reference material, and a wide column of it crowds out
 # the conversation it is meant to accompany.
 #
-# Before the first plan there is nothing to put beside the conversation, so the
-# conversation gets the whole width. That is the opening screen: a greeting and a
-# chat box, and no rails at all -- neither one describes anything yet.
+# It is the one rail that waits: before the first plan there is nothing to put
+# beside the conversation, so the conversation gets the full width. That is the
+# opening screen -- a greeting and a chat box, and no plan to read yet.
 has_plan = st.session_state.plan is not None
 
 plan_column = None
@@ -262,7 +410,7 @@ if has_plan:
 else:
     chat_column = st.container()
 
-submitted_brief = render_sidebar() if has_plan else None
+submitted_brief = render_rail()
 
 
 # --------------------------------------------------------------------------
