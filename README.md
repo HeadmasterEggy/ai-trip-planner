@@ -129,6 +129,13 @@ asking, because the plan then drifts from the request without anyone noticing. E
 through the routed model with a local bilingual parser behind it, so the chat works with no API key
 at all — including reading a bare opening message like `Tokyo` as the destination.
 
+The rail on the left is the navigation: search, `New chat`, the trip's own panels, and this
+session's trips and chats as clickable rows. It arrives with the first plan and then stays, so
+`New chat` never strands the trip it just parked. A conversation becomes a trip the moment it
+produces a plan, which is also what decides which list it appears in. The history is session state,
+so a refresh loses it; the palette is `.streamlit/config.toml` plus `src/trip_planner/ui/theme.py`,
+and a test fails if the two disagree or if a colour is written as a literal.
+
 ## Scope
 
 Enter a trip, inspect grounded recommendations, see what needs a human decision, and export the

@@ -312,6 +312,65 @@ pinned each field's transition one at a time.
 
 ---
 
+## 13. A theme toggle that did nothing
+
+**Symptom.** A light/dark button in the rail, wired to Streamlit's theme config. Clicking it reran
+the script and the page did not change. No error, no warning: the button had no visible effect,
+which is indistinguishable from a button that was never wired up.
+
+**Why it misled.** The obvious reading is "the private API does not work". `st._config.set_option`
+is private, so "it silently does nothing" is a believable story — and the next move would have been
+to write it off and build a CSS theme layer instead: a much larger change, fighting generated class
+names, for a result that drifts on every Streamlit upgrade.
+
+**Cause.** Not the API. `config.toml` pinned the whole palette:
+
+```toml
+[theme]
+base = "dark"
+backgroundColor = "#0D0D10"      # every one of these is applied to *both* bases
+secondaryBackgroundColor = "#17171C"
+textColor = "#ECECF1"
+```
+
+Streamlit applies those three to whichever base is active, so with them pinned `theme.base` decides
+nothing: dark and light render identically, and the toggle is a no-op. `set_option` was working the
+whole time.
+
+**Fix.** `config.toml` stopped pinning the neutrals: the two palettes in `ui/theme.py` mirrored
+Streamlit's own light and dark values instead, and `tests/test_theme.py` pinned both the mirror and
+the absence of a pin, so an upgrade that moves those defaults is an alarm rather than a silent
+mismatch.
+
+**Outcome.** The light/dark switch was later taken back out — the app pins one light palette again
+(see *Theme* in `docs/streamlit-ui.md`) — so the "fix" above no longer describes the code. The
+constraints do, and that is the half worth keeping: pinning a theme is what hides Streamlit's own
+picker *and* what makes a runtime switch possible; per-base tables are what hand the choice to the
+user and make the switch impossible. Which one an app wants is a product decision, and it has to be
+made before the button, not after.
+
+**How it was found.** By measuring instead of reasoning. A throwaway app in `/tmp` with one toggle,
+asking one question — what is the computed background of `.stApp` before and after? — answered it in
+four variants: no custom theme (flip works, `#0E1117` → `#FFFFFF`), a full custom palette (flip does
+nothing), `[theme.light]` alone or both per-base tables (the *browser's* preference wins; the flip
+does nothing), and accent-only (flip works). Two facts fell out that no amount of reading would have
+produced:
+
+- Defining `[theme.light]`/`[theme.dark]` hands the choice to the client, so the app can no longer
+  set the theme itself. It is one or the other, never both — which is a product decision, not a bug.
+  One per-base table is enough to do it; both are not required.
+- `st.context.theme.type` is not "the theme in use". In the accent-only app it reported `light`
+  while the page rendered dark, and `dark` while the page rendered white: inverted in both
+  directions. It reports the *browser's* preference, which only agrees with the page when the app
+  does not override it. ([streamlit#11920](https://github.com/streamlit/streamlit/issues/11920) is
+  the open issue about `st.context.theme` not working in all situations.)
+
+**Lesson, again.** Two of those four variants agreed with the plausible story and two did not, and
+the difference was invisible in the code. "The private API silently failed" would have been a wrong
+diagnosis with a large, permanent workaround attached to it.
+
+---
+
 ## Recurring lessons
 
 **A silent fallback is worse than a crash.** Most of these took time because the

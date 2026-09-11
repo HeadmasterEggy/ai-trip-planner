@@ -1,9 +1,19 @@
 [theme]
+# Light, and pinned by the app: one palette, no dark mode.
+#
+# The values below repeat `PALETTE` in `ui/theme.py`, and `tests/test_theme.py`
+# fails when the two drift apart.
+#
+# Pinning anything at the top level of `[theme]` is what makes the app's config
+# win over the user's own preference -- and it is also what hides Streamlit's
+# System / Light / Dark picker. Here that is the intent: the app has one look.
+# `docs/debugging-log.md` entry 13 has the measurements behind that rule.
 base = "light"
 primaryColor = "#4F46E5"
 backgroundColor = "#FBFBFC"
 secondaryBackgroundColor = "#F4F4F6"
 textColor = "#18181B"
+borderColor = "#E5E7EB"
 font = "sans serif"
 
 [server]

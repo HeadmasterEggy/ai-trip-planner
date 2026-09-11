@@ -26,15 +26,19 @@ negotiated, act on what needs a decision, and take the plan with you.
    assumptions it corrected.
 10. A run says what each section cost: which route would answer it and how long it took, in the
    reasoning view and in the exported plan.
-11. An opening screen that assumes nothing: no prefilled demo trip, no example chips, no rails before
-    the first plan, and a conversation that collects the trip one answer at a time and asks for
-    whatever is missing.
+11. An opening screen that assumes nothing: no prefilled demo trip, no example chips, and a
+    conversation that collects the trip one answer at a time and asks for whatever is missing.
+12. A navigation rail: brand, search, `New chat`, the trip's panels behind it, and this session's
+    trips and chats as clickable rows. Every row does something — there is no Explore or Saved,
+    because there is nothing behind them. It arrives with the first plan and then stays.
 
 ## Next
 
 1. **Durable memory.** `InMemoryStore` loses everything on restart, and `promote()` is what would
    let a stated dietary preference survive into the next session — dining currently reports "no
-   confirmed dietary preferences" because long-term memory is always empty.
+   confirmed dietary preferences" because long-term memory is always empty. The rail's conversation
+   list is the other half of this: it is session state, so a refresh loses the history, and a
+   durable store is what it would eventually read from.
 2. **Real place and booking data.** `USE_MOCK_TOOLS=false` already switches maps to OpenStreetMap.
    Booking has no live provider; fixtures are clearly labelled as fictional and must stay that way
    until one exists.
