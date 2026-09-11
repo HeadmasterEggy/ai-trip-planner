@@ -1,11 +1,10 @@
 """The Streamlit entry point, driven headlessly.
 
-`streamlit_app.py` is ~600 lines and had no test, which is how a dead join
+`streamlit_app.py` is ~550 lines and had no test, which is how a dead join
 (`section.id in checkpoint_id`, fixed in the first wave) survived in it. `AppTest`
 runs the real script, so this covers the wiring the module tests cannot: the
-opening screen, the rail and its conversation list, the plan rail that arrives
-with the first plan, the pause for an escalation, and the session state that
-carries the paused thread.
+opening screen, the rails that arrive with the first plan, the pause for an
+escalation, and the session state that carries the paused thread.
 
 Kept offline by blanking the credentials before the script runs: `load_dotenv` does
 not overwrite variables that already exist, so an empty value keeps the run on the
@@ -18,7 +17,6 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from trip_planner.chat import fallback_question_for
@@ -43,22 +41,17 @@ def demo_dates() -> tuple[str, str]:
 
 def one_message_trip() -> str:
     start, end = demo_dates()
-    return f"Tokyo, {start} to {end}, 2 people, budget $20000"
+    return f"Tokyo & Kyoto, {start} to {end}, 2 people, budget $20000"
 
 
-def rail_text(at: AppTest) -> str:
-    """Everything the rail draws as HTML, for asserting on rows and sections."""
-    return " ".join(element.value for element in at.sidebar.markdown)
-
-
-def test_the_app_opens_on_a_greeting_and_an_empty_rail(offline):
-    """The first screen assumes nothing: a greeting, a chat box, and a rail that
-    says it has nothing to list.
+def test_the_app_opens_on_a_greeting_and_nothing_else(offline):
+    """The first screen is a greeting and a chat box. Nothing else.
 
     It used to open on `demo_brief()` -- Tokyo & Kyoto, seven days, $4,000, already
-    filled in -- so a visitor's first act was to delete someone else's trip. The
-    rail is navigation rather than trip content, so it is there from the start; the
-    plan rail is not, because there is no plan to read.
+    filled in -- so a visitor's first act was to delete someone else's trip. Then it
+    opened on three example trips and a sidebar describing a trip that did not exist
+    yet. Neither rail is rendered now: the plan rail because there is no plan, the
+    sidebar because nothing in it describes anything yet.
     """
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
 
@@ -66,41 +59,13 @@ def test_the_app_opens_on_a_greeting_and_an_empty_rail(offline):
     assert at.session_state["plan"] is None
     assert at.session_state["draft"] == BriefPatch()
     assert at.session_state["messages"] == []
-    assert at.session_state["history"] == []
     assert at.session_state["pending_escalation"] is None
     assert any("tp-hero" in element.value for element in at.markdown)
-
-    # No plan rail and no example chips: the only buttons are the rail's own.
-    assert [button.key for button in at.button] == ["theme-toggle", "form-submit", "new-chat"]
-    assert "No chats yet." in rail_text(at)
-    assert [expander.label for expander in at.expander] == [
-        "🧳 Trip details",
-        "🤖 Planning team",
-        "⚙️ Setup",
-    ]
+    # No example chips, no plan toggle, no form: no buttons at all.
+    assert at.button == []
+    assert at.sidebar.markdown == []
+    assert at.sidebar.button == []
     assert at.chat_input[0].placeholder == "Where would you like to go?"
-
-
-def test_the_theme_toggle_flips_the_app_theme(offline):
-    """The rail's one non-per-session control.
-
-    Streamlit's theme is server config, not session state, so this test restores
-    it afterwards -- leaving it flipped would re-theme every test that ran after.
-    """
-    original = st.get_option("theme.base") or "dark"
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    try:
-        # Dark is the default, so the rail offers the way out of it.
-        assert at.button(key="theme-toggle").label == "☀️"
-
-        at.button(key="theme-toggle").set_value(True).run()
-
-        assert not at.exception
-        assert st.get_option("theme.base") == "light"
-        # And now it offers the way back.
-        assert at.button(key="theme-toggle").label == "🌙"
-    finally:
-        st._config.set_option("theme.base", original)
 
 
 def test_the_opening_message_is_read_as_the_destination(offline):
@@ -120,134 +85,56 @@ def test_the_opening_message_is_read_as_the_destination(offline):
     assert at.session_state["messages"][1]["content"] == fallback_question_for(
         ["dates", "groupSize", "budgetTotal"]
     )
-    # Half a trip is a chat, not a trip, and still not a plan.
-    assert '<div class="tp-rail__active">💬 Tokyo</div>' in rail_text(at)
-    assert not any(button.key == "toggle-plan" for button in at.button)
+    # Half a trip is not a trip: the rails stay away until one can be planned.
+    assert at.button == []
+    assert at.sidebar.markdown == []
 
 
-def test_the_plan_rail_arrives_with_the_first_plan(offline):
-    """The plan rail waits for a plan; the rail's list does not."""
+def test_the_rails_arrive_with_the_first_plan(offline):
+    """Both rails appear together, and the form in the sidebar starts empty.
+
+    A form prefilled with four values is a trip somebody else chose, and a
+    traveller who submits it without reading plans a trip they never asked for.
+    Submitting the empty form has to be refused with the same words the chat would
+    use, so the two entry points cannot drift into accepting different trips.
+    """
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
     at.chat_input[0].set_value(one_message_trip()).run()
 
     assert not at.exception
     assert at.session_state["plan"] is not None
     assert any(button.key == "toggle-plan" for button in at.button)
-    # The open conversation is a highlighted row, not a second clickable copy.
-    assert "Trips" in rail_text(at)
-    assert 'class="tp-rail__active"' in rail_text(at)
-    assert not any(button.key.startswith("open-") for button in at.button)
-
-
-def test_a_new_chat_parks_the_trip_in_the_rail(offline):
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    at.chat_input[0].set_value(one_message_trip()).run()
-    parked = at.session_state["trip_id"]
-
-    at.button(key="new-chat").set_value(True).run()
-
-    assert not at.exception
-    # The screen is empty again and the trip is a row in the rail.
-    assert at.session_state["messages"] == []
-    assert at.session_state["plan"] is None
-    assert at.session_state["draft"] == BriefPatch()
-    assert at.session_state["trip_id"] != parked
-    assert [c.tripId for c in at.session_state["history"]] == [parked]
-    assert at.button(key=f"open-{parked}").label == "🧳 Tokyo"
-    assert (
-        '<div class="tp-rail__section">Trips<span class="tp-rail__badge">1</span></div>'
-        in rail_text(at)
-    )
-
-
-def test_reopening_a_conversation_restores_it(offline):
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    at.chat_input[0].set_value(one_message_trip()).run()
-    parked = at.session_state["trip_id"]
-    transcript = list(at.session_state["messages"])
-
-    at.button(key="new-chat").set_value(True).run()
-    at.button(key=f"open-{parked}").set_value(True).run()
-
-    assert not at.exception
-    assert at.session_state["trip_id"] == parked
-    assert at.session_state["messages"] == transcript
-    assert at.session_state["plan"] is not None
-    assert at.session_state["draft"].destination == "Tokyo"
-    # It is open, so it is the highlighted row rather than a row you can click.
-    assert at.session_state["history"] == []
-    assert 'class="tp-rail__active"' in rail_text(at)
-
-
-def test_search_filters_the_rail(offline):
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    at.chat_input[0].set_value(one_message_trip()).run()
-    parked = at.session_state["trip_id"]
-    at.button(key="new-chat").set_value(True).run()
-
-    at.sidebar.text_input(key="rail-search").set_value("lisbon").run()
-    assert "No matches." in rail_text(at)
-    assert not any(button.key == f"open-{parked}" for button in at.button)
-
-    # Case-insensitive, and it matches the row the rail actually draws.
-    at.sidebar.text_input(key="rail-search").set_value("tokyo").run()
-    assert any(button.key == f"open-{parked}" for button in at.button)
-
-
-def test_the_form_starts_empty_and_is_refused_in_the_same_words_as_the_chat(offline):
-    """A prefilled form is a trip somebody else chose.
-
-    An empty submission has to be refused through the same contract the chat uses,
-    so the two entry points cannot drift into accepting different trips.
-    """
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-
+    assert at.sidebar.markdown, "the sidebar should describe the trip that now exists"
     assert [(widget.label, widget.value) for widget in at.sidebar.date_input] == [
         ("Start", None),
         ("End", None),
     ]
     assert [widget.value for widget in at.sidebar.number_input] == [None, None]
-    assert at.sidebar.text_input(key="form-destination").value == ""
+    assert [widget.value for widget in at.sidebar.text_input] == ["", ""]
 
-    at.button(key="form-submit").set_value(True).run()
+    at.sidebar.button[0].set_value(True).run()
 
     assert not at.exception
     expected = ", ".join(FIELD_NAMES[field] for field in missing_fields(BriefPatch()))
     assert [error.value for error in at.sidebar.error] == [f"Still needed: {expected}."]
-    assert at.session_state["plan"] is None
+    # Nothing was planned from an empty form.
+    assert at.session_state["plan"].brief.destination == "Tokyo & Kyoto"
 
 
 def test_the_form_plans_the_trip_it_was_given(offline):
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
+    at.chat_input[0].set_value(one_message_trip()).run()
 
-    at.sidebar.text_input(key="form-destination").set_value("Lisbon")
-    at.sidebar.date_input(key="form-start").set_value(date(2026, 12, 1))
-    at.sidebar.date_input(key="form-end").set_value(date(2026, 12, 6))
-    at.sidebar.number_input(key="form-group").set_value(3)
-    at.sidebar.number_input(key="form-budget").set_value(2500)
-    at.button(key="form-submit").set_value(True).run()
+    at.sidebar.text_input[0].set_value("Lisbon")
+    at.sidebar.date_input[0].set_value(date(2026, 12, 1))
+    at.sidebar.date_input[1].set_value(date(2026, 12, 6))
+    at.sidebar.number_input[0].set_value(3)
+    at.sidebar.number_input[1].set_value(2500)
+    at.sidebar.button[0].set_value(True).run()
 
     assert not at.exception
     assert at.session_state["plan"].brief.destination == "Lisbon"
     assert at.session_state["plan"].brief.budgetTotal == 2500
-
-
-def test_leaving_a_paused_run_does_not_leave_its_thread_behind(offline):
-    """A paused escalation's thread belongs to the conversation being left.
-
-    Answering it later would resume a run for a trip that is no longer on screen,
-    and the checkpoint would sit in the process-wide store forever.
-    """
-    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    at.chat_input[0].set_value(one_message_trip()).run()
-    at.chat_input[0].set_value("set the budget to $1500").run()
-    assert at.session_state["pending_escalation"], "expected the run to pause"
-
-    at.button(key="new-chat").set_value(True).run()
-
-    assert not at.exception
-    assert at.session_state["pending_escalation"] is None
-    assert not any(button.key.startswith("escalation-") for button in at.button)
 
 
 def test_an_escalation_pauses_and_the_button_resumes_it(offline):

@@ -17,9 +17,6 @@ src/trip_planner/
   specialists/                    the five agents, one module each
   tools/                          maps and booking adapters, and the gateway that joins them
   ui/                             presentation tokens and rendering helpers
-    theme.py                      the palette and the one injected stylesheet
-    render.py                     plan -> HTML fragments, no Streamlit
-    history.py                    the rail's conversation list, no Streamlit
 tests/                            behaviour tests, no network
 docs/                             architecture, orchestration, UI, observability, debugging
 ```

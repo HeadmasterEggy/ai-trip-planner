@@ -1,21 +1,10 @@
 [theme]
-# Dark by default, and switchable from the rail at runtime.
-#
-# Only `primaryColor` and non-colour keys are set here, and that is load-bearing:
-# Streamlit applies a pinned neutral (`backgroundColor`, `secondaryBackgroundColor`,
-# `textColor`) to *both* bases, so the moment one is pinned, switching the base
-# stops changing anything and the toggle silently does nothing. The neutrals come
-# from Streamlit's own light and dark themes; `ui/theme.py` mirrors those values,
-# and `tests/test_theme.py` pins both the mirror and the absence of a pin here.
-#
-# One accent has to serve both bases, so it is the mid-tone indigo. Each palette
-# carries its own accent for text, where the contrast actually matters.
-base = "dark"
-primaryColor = "#6D6EF0"
+base = "light"
+primaryColor = "#4F46E5"
+backgroundColor = "#FBFBFC"
+secondaryBackgroundColor = "#F4F4F6"
+textColor = "#18181B"
 font = "sans serif"
-baseRadius = "0.5rem"
-buttonRadius = "0.5rem"
-showSidebarBorder = true
 
 [server]
 headless = true
