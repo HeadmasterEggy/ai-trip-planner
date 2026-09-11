@@ -78,6 +78,15 @@ class TripBrief(BaseModel):
 BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
 REQUIRED_BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal")
 
+# The same four fields as a traveller would name them. Shared so that a chat
+# question and a form error ask for the same thing in the same words.
+FIELD_NAMES = {
+    "destination": "where you want to go",
+    "dates": "your travel dates",
+    "groupSize": "how many people are travelling",
+    "budgetTotal": "your total budget in USD",
+}
+
 
 class BriefPatch(BaseModel):
     """A partial trip: only the fields that have actually been stated.

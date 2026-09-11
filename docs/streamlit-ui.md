@@ -14,32 +14,40 @@ Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first ac
 someone else's trip before saying where they actually wanted to go.
 
 Nothing is assumed until the traveller says it. The session holds a `BriefPatch` (a draft, every
-field optional) rather than a brief, and it starts empty; the plan rail is not rendered at all,
-because with nothing planned there is nothing to collapse and the conversation can have the full
-width. The only suggestion on screen is three example one-liners, dated from today so a
-long-running deployment never opens by proposing a trip that has already happened.
+field optional) rather than a brief, and it starts empty. **Neither rail is rendered yet**: the plan
+rail because there is no plan, the sidebar because everything in it describes a trip that does not
+exist. No example chips either — a suggestion that fills the page is one more thing to read before
+saying where you want to go, and the chat box already says what it wants.
 
-A turn now has two shapes. If the draft is complete the orchestrator runs and the reply describes
-the plan. If something required is still missing, nothing is planned at all: the reply asks for the
-first missing field — by name, in the traveller's language — and the answer is merged into the draft
-for the next turn. "Tokyo" alone is enough to start, because the local parser reads a short opening
-message that named no other field as the destination; a greeting is not, and mid-conversation words
-like "cheaper" are never read as a place.
+A turn has two shapes. If the draft is complete the orchestrator runs, the reply describes the plan,
+and both rails arrive with it. If something required is still missing, nothing is planned at all:
+the reply asks for the first missing field — by name, in the traveller's language — and the answer is
+merged into the draft for the next turn. "Tokyo" alone is enough to start, because the local parser
+reads a short opening message that named no other field as the destination; a greeting is not, and
+mid-conversation words like "cheaper" are never read as a place.
 
 ```text
-Where to today?
-[ Tokyo & Kyoto, 2026-11-10 to 2026-11-17, 2 people, budget $4000 ]
+        ✈️
+   Where to today?
+   Tell me where you want to go and roughly when. …
+   [ Where would you like to go? ]
+
 > Tokyo
   When would you like to travel? Dates as YYYY-MM-DD … I'll also need how many people
   are travelling and your total budget in USD.
 > 2026-11-10 to 2026-11-17, 2 people, budget $4000
-  … five specialists run …
+  … five specialists run, and the trip rails appear …
 ```
 
 **Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. The
-structured path still exists, but it sits behind a collapsed expander in the sidebar, and filling it
-in *replaces* the draft rather than editing it — prefilling it from the conversation would invite a
-half-edit that is neither the draft nor what is on screen.
+structured path still exists, but it arrives with the first plan, collapsed inside the sidebar — and
+every one of its fields starts empty. A prefilled form is a trip somebody else chose, and a traveller
+who submits it without reading plans a trip they never asked for. Submitting it incomplete is refused
+with the same words the chat asks in, because both go through `contracts.missing_fields`.
+
+**Why the rails wait.** A rail is only worth its space once it describes something. Before the first
+plan the conversation takes the whole width, which is also what makes the first screen read as a chat
+rather than as an empty dashboard.
 
 ## Per-agent progress
 
@@ -132,20 +140,22 @@ export that drops the caveats is a different document from the one being reviewe
 
 ## Layout
 
-Two rails around a conversation.
+Two rails around a conversation, and neither of them exists until the first plan.
 
 The **left rail** is the sidebar, which Streamlit collapses natively: visible while you are
 adjusting the trip, out of the way while you are reading the plan. Nothing in it is required —
 every field can simply be said to the planner, which is why the form is a collapsed expander rather
-than the front of the page. The brand sits at the top of it, because that is already the page's
-top-left corner and a full-width title was spending vertical space the conversation needed.
+than the front of the page, and why every field in it is empty. The brand sits at the top of it,
+because that is already the page's top-left corner and a full-width title was spending vertical
+space the conversation needed.
 
-The **right rail** holds the plan and collapses the same way, through a chevron on its edge. It does
-not exist until there is a plan. Streamlit has no second sidebar, so it is two column ratios and a
-session flag: `[1, 0.85]` open, `[1, 0.045]` closed.
+The **right rail** holds the plan and collapses the same way, through a chevron on its edge.
+Streamlit has no second sidebar, so it is two column ratios and a session flag: `[1, 0.85]` open,
+`[1, 0.045]` closed.
 
 The **conversation** sits between them and takes the width the plan gives back — all of it, before
-the first plan.
+the first plan. `Start a new trip` returns to that state: it clears the plan and the draft, so both
+rails go away again and the page is a greeting.
 
 Two details that were wrong first time:
 
