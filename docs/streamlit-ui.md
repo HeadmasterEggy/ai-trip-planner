@@ -116,9 +116,35 @@ Three things about this arrangement are load-bearing, and none of them are visib
 The switch is the ☀️/🌙 button beside the brand. It writes Streamlit's theme config and reruns —
 `st._config` is private, so a release that removes it degrades to a warning rather than a dead
 button — and that makes the theme a property of the **server process, not the session**: on a shared
-deployment one visitor's click changes it for everyone until someone changes it back. That is the
-price of an in-app switch. The alternative Streamlit offers is the theme picker in its own ⋮ menu,
-which is per user, but it only appears when the app defines no theme of its own.
+deployment one visitor's click changes it for everyone until someone changes it back.
+
+### Who decides the theme
+
+Streamlit resolves a theme from two things — the app's `[theme]` config and the *user's* per-browser
+preference (the System / Light / Dark row in its ⋮ menu, kept as `stActiveTheme-/-v2`) — and which
+one wins turns on a single question: **does the app pin a theme of its own?** Pinning anything at the
+top level of `[theme]`, even just `primaryColor`, hides the picker and makes the app's config
+authoritative. Declaring `[theme.light]` and `[theme.dark]` says "I support both" instead: the picker
+appears and the user's preference decides.
+
+That is why it cannot be both. An in-app button *is* the app deciding, so it needs the first mode; a
+per-user picker is the user deciding, and in the second mode changing the base has no visible effect
+at all. Measured four ways, by reading the computed background of `.stApp`:
+
+| `.streamlit/config.toml` | picker in ⋮ | the base flip | who decides |
+| --- | --- | --- | --- |
+| nothing at all | present | no effect | the user (System follows the OS) |
+| `primaryColor` only | hidden | works | the app |
+| top-level neutral colours | hidden | **no effect** | the app, frozen to one look |
+| `[theme.light]` + `[theme.dark]` | present | no effect | the user |
+
+This app is the second row. The third is the trap: pinning a neutral makes the app authoritative
+*and* immune to the base, so the button looks broken. The fourth is where to move if per-user themes
+matter more than the button — our palettes survive it, because the per-base tables take our accent
+and neutrals for each mode; what is lost is the button, and `theme.base` stops being the truth about
+what is on screen. Our CSS would then need the live palette from `st.context.theme.type` (the user's
+choice) instead, which is only as good as the situation: it reports the *browser's* preference,
+which is the opposite of what is drawn whenever the app overrides it.
 
 ## Per-agent progress
 
