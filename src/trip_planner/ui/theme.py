@@ -4,27 +4,73 @@ The palette, spacing rhythm and card shapes are carried over from the React
 implementation so the two front ends look like the same product. Streamlit
 cannot express all of it — there is no per-component stylesheet — so this is
 one injected block scoped by class name.
+
+The palette lives in two files and that is deliberate: `.streamlit/config.toml`
+is the only place Streamlit's own widgets read colours from, and this module owns
+everything we draw ourselves. `PALETTE` repeats the five values they share, and
+`tests/test_theme.py` parses the TOML and fails when the two drift apart — a
+palette in two files drifts silently otherwise.
+
+There is one palette, and the app pins it: no light/dark switch. Streamlit
+resolves a theme from the app's config *and* the user's own preference, and
+pinning anything at the top level of `[theme]` is what makes the app's config
+win — which is also why Streamlit hides its own theme picker in this app. See
+entry 13 of `docs/debugging-log.md` for what that cost to establish.
 """
 
 from __future__ import annotations
 
-# Kept in the same order and naming as the original design tokens so a change
-# in one front end is easy to mirror in the other.
-CSS = """
+# Named for what they are for, not for what colour they happen to be, so a
+# re-theme is a swap of this map and nothing else. The five marked `[theme]`
+# repeat `.streamlit/config.toml`; `tests/test_theme.py` pins them, because a
+# palette written down twice drifts silently otherwise.
+#
+# `surface` is the rail, and it has to equal Streamlit's own secondary
+# background: the components that sit on the rail -- the sticky `New chat`
+# gradient, a hovered row -- blend against it.
+PALETTE = {
+    # Page and text.
+    "bg": "#FBFBFC",  # [theme] backgroundColor
+    "surface": "#F4F4F6",  # [theme] secondaryBackgroundColor: the rail
+    "surface-2": "#E9ECF1",  # raised above the rail: cards, rows, hover
+    "border": "#E5E7EB",  # [theme] borderColor
+    "text": "#18181B",  # [theme] textColor
+    "text-dim": "#5A6072",
+    "text-mut": "#808495",
+    # Accent.
+    "accent": "#4F46E5",  # [theme] primaryColor
+    "accent-bg": "#EEF2FF",
+    # Text on a filled accent/amber badge.
+    "on-accent": "#FFFFFF",
+    "on-warn": "#3A2A05",
+    # Semantic. Amber is the one loud badge, and it keeps dark text.
+    "ok": "#047857",
+    "ok-bg": "#ECFDF5",
+    "warn": "#B45309",
+    "warn-strong": "#F59E0B",
+    "warn-bg": "#FFFBEB",
+    # Timeline owners.
+    "transport": "#0369A1",
+    "accommodation": "#7C3AED",
+    "dining": "#B45309",
+}
+
+RADII = {"radius-sm": "6px", "radius-pill": "999px"}
+
+
+def _root() -> str:
+    """The `:root` custom properties, generated from the two maps above."""
+    lines = [f"  --tp-{name}: {value};" for name, value in {**PALETTE, **RADII}.items()]
+    return "\n".join(lines)
+
+
+CSS = (
+    """
 <style>
 :root {
-  --tp-surface-2: #f4f4f6;
-  --tp-text-dim: #6b7280;
-  --tp-text-mut: #9ca3af;
-  --tp-border: #e5e7eb;
-  --tp-accent: #4f46e5;
-  --tp-accent-bg: #eef2ff;
-  --tp-ok: #047857;
-  --tp-warn: #b45309;
-  --tp-warn-strong: #f59e0b;
-  --tp-warn-bg: #fffbeb;
-  --tp-radius-sm: 6px;
-  --tp-radius-pill: 999px;
+"""
+    + _root()
+    + """
 }
 
 /* Proposal card: an accent edge keeps a long list scannable, which is the
@@ -70,8 +116,8 @@ CSS = """
   white-space: nowrap;
 }
 .tp-chip--draft { background: var(--tp-surface-2); color: var(--tp-text-mut); }
-.tp-chip--needs_you { background: var(--tp-warn-strong); color: #3a2a05; }
-.tp-chip--confirmed { background: #ecfdf5; color: var(--tp-ok); }
+.tp-chip--needs_you { background: var(--tp-warn-strong); color: var(--tp-on-warn); }
+.tp-chip--confirmed { background: var(--tp-ok-bg); color: var(--tp-ok); }
 .tp-chip--planning { background: var(--tp-accent-bg); color: var(--tp-accent); }
 
 /* Agent activity rows. Only the row actually working moves. */
@@ -139,6 +185,111 @@ CSS = """
   margin-bottom: 2px;
 }
 
+/* ---------------------------------------------------------------------------
+   The rail. Rows are navigation, not form controls: left-aligned, quiet until
+   hovered. Scoped to their container key so the trip form's own buttons keep
+   Streamlit's styling -- and so the only thing a new row has to do is live in
+   the right container.
+   --------------------------------------------------------------------------- */
+.st-key-rail-search input {
+  background: var(--tp-surface-2) !important;
+  border: 1px solid var(--tp-border) !important;
+  border-radius: var(--tp-radius-pill) !important;
+  color: var(--tp-text) !important;
+}
+.st-key-rail-search input::placeholder { color: var(--tp-text-mut) !important; }
+
+.tp-rail__section {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--tp-text-mut);
+  margin: 16px 0 2px;
+}
+.tp-rail__badge {
+  margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: 0;
+  background: var(--tp-surface-2); color: var(--tp-text-dim);
+  border-radius: var(--tp-radius-pill); padding: 1px 7px;
+}
+.tp-rail__empty { color: var(--tp-text-mut); font-size: 12px; padding: 2px 0; }
+
+/* The panels are expanders, but they sit in a list of nav rows. Streamlit draws
+   an expander as a bordered box with a chevron; inside the rail it loses the box
+   so it matches the rows around it, and keeps the chevron because it does open. */
+.st-key-rail-nav [data-testid="stExpander"] details,
+.st-key-rail-nav [data-testid="stExpander"] > details {
+  border: none !important;
+  background: transparent !important;
+}
+.st-key-rail-nav [data-testid="stExpander"] summary {
+  font-size: 14px; font-weight: 500; color: var(--tp-text);
+  padding: 8px 9px !important; border-radius: var(--tp-radius-sm);
+}
+.st-key-rail-nav [data-testid="stExpander"] summary:hover {
+  background: var(--tp-surface-2);
+}
+
+/* The conversation you are in cannot be a button -- it is already open -- so it
+   is drawn as the row the list uses to say "you are here". */
+.tp-rail__active {
+  display: flex; align-items: center; gap: 8px;
+  border-left: 2px solid var(--tp-accent);
+  background: var(--tp-surface-2);
+  border-radius: 0 var(--tp-radius-sm) var(--tp-radius-sm) 0;
+  padding: 7px 9px; margin: 2px 0;
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
+.st-key-rail-nav button,
+.st-key-rail-history button {
+  justify-content: flex-start !important;
+  text-align: left !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--tp-text) !important;
+  font-weight: 500 !important;
+  padding: 7px 9px !important;
+  min-height: 0 !important;
+  line-height: 1.3 !important;
+  width: 100% !important;
+}
+.st-key-rail-nav button:hover,
+.st-key-rail-history button:hover {
+  background: var(--tp-surface-2) !important;
+  color: var(--tp-text) !important;
+}
+/* One line per row, ellipsised: a rail that reflows with every title cannot be
+   scanned. */
+.st-key-rail-nav button p,
+.st-key-rail-history button p {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 13px; width: 100%; text-align: left;
+}
+/* A row's subtitle belongs to the row above it, so it is tighter than a normal
+   caption and indented to the label. */
+.st-key-rail-history [data-testid="stCaptionContainer"] {
+  margin: -4px 0 4px 9px;
+}
+.st-key-rail-history [data-testid="stCaptionContainer"] p { font-size: 11px; }
+
+/* Pinned to the bottom of the rail, like the reference: the primary action has
+   to be reachable without scrolling back up a long history. The gradient fades
+   to the rail's own colour -- fading to the page colour would leave a smudge --
+   which is what keeps rows from showing through it. */
+.st-key-rail-new-chat {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  padding-top: 10px;
+  background: linear-gradient(180deg, transparent, var(--tp-surface) 45%);
+}
+.st-key-rail-new-chat button {
+  width: 100% !important;
+  border-radius: var(--tp-radius-pill) !important;
+  font-weight: 600 !important;
+}
+
 /* The opening screen. Before anything is planned there is no plan to put beside
    the conversation, so this is the whole page: a greeting, and the invitation to
    say where. Centred vertically as well as horizontally, because the greeting is
@@ -179,10 +330,10 @@ CSS = """
   font-size: 12px;
 }
 /* Colour by owner so transport reads as fixed and activities as movable. */
-.tp-tl__row--transport { border-left-color: #0369a1; }
+.tp-tl__row--transport { border-left-color: var(--tp-transport); }
 .tp-tl__row--itinerary { border-left-color: var(--tp-accent); }
-.tp-tl__row--accommodation { border-left-color: #7c3aed; }
-.tp-tl__row--dining { border-left-color: #b45309; }
+.tp-tl__row--accommodation { border-left-color: var(--tp-accommodation); }
+.tp-tl__row--dining { border-left-color: var(--tp-dining); }
 .tp-tl__when {
   min-width: 84px; font-variant-numeric: tabular-nums; color: var(--tp-text-dim);
 }
@@ -211,7 +362,7 @@ CSS = """
   border-radius: var(--tp-radius-sm);
   padding: 9px 11px;
   margin-bottom: 6px;
-  background: #fff;
+  background: var(--tp-surface-2);
 }
 .tp-opt--picked { border-color: var(--tp-accent); background: var(--tp-accent-bg); }
 .tp-opt__head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
@@ -227,11 +378,11 @@ CSS = """
 .tp-step { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 4px; }
 .tp-step__n {
   flex: none; width: 20px; height: 20px; border-radius: var(--tp-radius-pill);
-  background: var(--tp-accent); color: #fff; font-size: 11px; font-weight: 600;
+  background: var(--tp-accent); color: var(--tp-on-accent); font-size: 11px; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
 }
 .tp-step__n--done { background: var(--tp-ok); }
-.tp-step__n--todo { background: var(--tp-warn-strong); color: #3a2a05; }
+.tp-step__n--todo { background: var(--tp-warn-strong); color: var(--tp-on-warn); }
 .tp-step__body { flex: 1; min-width: 0; }
 
 /* Specialist reasoning: what it read, and which path it took. */
@@ -249,7 +400,7 @@ CSS = """
   padding: 1px 7px; border-radius: var(--tp-radius-pill);
 }
 .tp-src--model { background: var(--tp-accent-bg); color: var(--tp-accent); }
-.tp-src--calc { background: #ecfdf5; color: var(--tp-ok); }
+.tp-src--calc { background: var(--tp-ok-bg); color: var(--tp-ok); }
 .tp-src--fallback { background: var(--tp-warn-bg); color: var(--tp-warn); }
 .tp-ev { display: flex; gap: 10px; padding: 2px 0; align-items: baseline; }
 .tp-ev__k { min-width: 130px; color: var(--tp-text-mut); flex: none; }
@@ -272,6 +423,7 @@ CSS = """
 }
 </style>
 """
+)
 
 AGENT_ICONS = {
     "queued": "⏳",
