@@ -5,63 +5,105 @@ implementation so the two front ends look like the same product. Streamlit
 cannot express all of it — there is no per-component stylesheet — so this is
 one injected block scoped by class name.
 
-The palette lives in two files and that is deliberate: `.streamlit/config.toml`
-is the only place Streamlit's own widgets read colours from, and this module owns
-everything we draw ourselves. `PALETTE` repeats the five values they share, and
-`tests/test_theme.py` parses the TOML and fails when the two drift apart — a
-palette in two files drifts silently otherwise.
+Two palettes, one per base theme, because the app can be switched at runtime.
+Three rules hold the arrangement together, and all three were established by
+experiment rather than by reading:
+
+1. `.streamlit/config.toml` may pin `primaryColor` and nothing else. Pinning a
+   neutral (`backgroundColor`, `secondaryBackgroundColor`, `textColor`) freezes
+   that colour for *both* bases, so `theme.base` stops changing anything and the
+   toggle silently does nothing.
+2. The neutrals below are therefore Streamlit's own defaults for each base. That
+   is a dependency on Streamlit's built-in palette, which is why
+   `tests/test_theme.py` pins the values instead of trusting them.
+3. Which palette is live comes from `theme.base` -- the config that is actually
+   rendering -- and never from `st.context.theme`, which reports the browser's
+   preference. In this configuration it reports the *opposite* of what is on
+   screen, in both directions.
 """
 
 from __future__ import annotations
 
-# Named for what they are for, not for what colour they happen to be, so the
-# dark values below are the only thing a re-theme has to touch. The five marked
-# `[theme]` repeat `.streamlit/config.toml`; the test pins them.
-PALETTE = {
-    # Page and text.
-    "bg": "#0D0D10",  # [theme] backgroundColor
-    "surface": "#17171C",  # [theme] secondaryBackgroundColor: the rail
-    "surface-2": "#1E1E25",  # raised above the rail: cards, rows, inputs, hover
-    "border": "#2A2A33",  # [theme] borderColor
-    "text": "#ECECF1",  # [theme] textColor
-    "text-dim": "#9B9BAA",
-    "text-mut": "#70707F",
-    # Accent.
-    "accent": "#8B8CF7",  # [theme] primaryColor
+# Named for what they are for, not for what colour they happen to be, so a theme
+# is a swap of these two maps and nothing else.
+#
+# The neutral values are Streamlit's own (`bg` = backgroundColor, `surface` =
+# secondaryBackgroundColor, `text` = textColor); the rest are ours.
+DARK = {
+    "bg": "#0E1117",  # Streamlit's dark backgroundColor
+    "surface": "#262730",  # ... secondaryBackgroundColor: the rail
+    "surface-2": "#31333F",  # raised above the rail: cards, rows, hover
+    "border": "#3D3D4D",
+    "text": "#FAFAFA",  # Streamlit's dark textColor
+    "text-dim": "#A3A8B8",
+    "text-mut": "#808495",
+    "accent": "#8B8CF7",
     "accent-bg": "#232346",
-    # Text on a filled accent/amber badge. The accent is light, so white on it
-    # would be the low-contrast choice.
+    # Text on a filled accent/amber badge. The dark accent is light, so white on
+    # it would be the low-contrast choice.
     "on-accent": "#14141A",
     "on-warn": "#3A2A05",
-    # Semantic. Amber is the one loud badge, and it keeps dark text.
-    "ok": "#34D399",
+    "ok": "#3DD56D",
     "ok-bg": "#0F2A20",
-    "warn": "#FBBF24",
+    "warn": "#FFD166",
     "warn-strong": "#F59E0B",
     "warn-bg": "#2A2212",
-    # Timeline owners, brightened for a dark page: a dark blue border-left on a
-    # near-black row is invisible.
+    # Timeline owners: a dark blue border-left on a near-black row is invisible.
     "transport": "#38BDF8",
     "accommodation": "#C084FC",
     "dining": "#FBBF24",
 }
 
+LIGHT = {
+    "bg": "#FFFFFF",  # Streamlit's light backgroundColor
+    "surface": "#F0F2F6",  # ... secondaryBackgroundColor: the rail
+    "surface-2": "#E9ECF1",  # raised above the rail: cards, rows, hover
+    "border": "#D9DEE7",
+    "text": "#31333F",  # Streamlit's light textColor
+    "text-dim": "#5A6072",
+    "text-mut": "#808495",
+    # Darker than the dark theme's accent: the violet that reads well on
+    # near-black fails contrast on white.
+    "accent": "#5B5BD6",
+    "accent-bg": "#EEF2FF",
+    "on-accent": "#FFFFFF",
+    "on-warn": "#3A2A05",
+    "ok": "#047857",
+    "ok-bg": "#ECFDF5",
+    "warn": "#B45309",
+    "warn-strong": "#F59E0B",
+    "warn-bg": "#FFFBEB",
+    "transport": "#0369A1",
+    "accommodation": "#7C3AED",
+    "dining": "#B45309",
+}
+
+PALETTES = {"dark": DARK, "light": LIGHT}
+DEFAULT_THEME = "dark"
+
 RADII = {"radius-sm": "6px", "radius-pill": "999px"}
 
 
-def _root() -> str:
-    """The `:root` custom properties, generated from the two maps above."""
-    lines = [f"  --tp-{name}: {value};" for name, value in {**PALETTE, **RADII}.items()]
+def _root(palette: dict[str, str]) -> str:
+    """The `:root` custom properties, generated from the maps above."""
+    lines = [f"  --tp-{name}: {value};" for name, value in {**palette, **RADII}.items()]
     return "\n".join(lines)
 
 
-CSS = (
+def stylesheet(theme: str = DEFAULT_THEME) -> str:
+    """The one injected block, for the palette the browser is actually showing.
+
+    An unknown name falls back to the default rather than raising: a Streamlit
+    version that renames or adds a base should leave the app readable, not blank.
     """
+    palette = PALETTES.get(theme, PALETTES[DEFAULT_THEME])
+    return _TEMPLATE.replace("__TOKENS__", _root(palette))
+
+
+_TEMPLATE = """
 <style>
 :root {
-"""
-    + _root()
-    + """
+__TOKENS__
 }
 
 /* Proposal card: an accent edge keeps a long list scannable, which is the
@@ -174,6 +216,23 @@ CSS = (
   letter-spacing: -0.01em;
   color: var(--tp-accent);
   margin-bottom: 2px;
+}
+
+/* The theme switch, beside the brand. Icon-only because the tooltip says what it
+   does, and because a labelled button would take a row of its own in a rail
+   whose every row is navigation. */
+.st-key-theme-toggle button {
+  border: 1px solid var(--tp-border) !important;
+  background: transparent !important;
+  color: var(--tp-text-dim) !important;
+  padding: 2px 8px !important;
+  min-height: 0 !important;
+  line-height: 1.4 !important;
+  border-radius: var(--tp-radius-pill) !important;
+}
+.st-key-theme-toggle button:hover {
+  border-color: var(--tp-accent) !important;
+  color: var(--tp-accent) !important;
 }
 
 /* ---------------------------------------------------------------------------
@@ -414,7 +473,6 @@ CSS = (
 }
 </style>
 """
-)
 
 AGENT_ICONS = {
     "queued": "⏳",

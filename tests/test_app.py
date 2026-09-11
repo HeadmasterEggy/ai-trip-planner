@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from trip_planner.chat import fallback_question_for
@@ -70,7 +71,7 @@ def test_the_app_opens_on_a_greeting_and_an_empty_rail(offline):
     assert any("tp-hero" in element.value for element in at.markdown)
 
     # No plan rail and no example chips: the only buttons are the rail's own.
-    assert [button.key for button in at.button] == ["form-submit", "new-chat"]
+    assert [button.key for button in at.button] == ["theme-toggle", "form-submit", "new-chat"]
     assert "No chats yet." in rail_text(at)
     assert [expander.label for expander in at.expander] == [
         "🧳 Trip details",
@@ -78,6 +79,28 @@ def test_the_app_opens_on_a_greeting_and_an_empty_rail(offline):
         "⚙️ Setup",
     ]
     assert at.chat_input[0].placeholder == "Where would you like to go?"
+
+
+def test_the_theme_toggle_flips_the_app_theme(offline):
+    """The rail's one non-per-session control.
+
+    Streamlit's theme is server config, not session state, so this test restores
+    it afterwards -- leaving it flipped would re-theme every test that ran after.
+    """
+    original = st.get_option("theme.base") or "dark"
+    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
+    try:
+        # Dark is the default, so the rail offers the way out of it.
+        assert at.button(key="theme-toggle").label == "☀️"
+
+        at.button(key="theme-toggle").set_value(True).run()
+
+        assert not at.exception
+        assert st.get_option("theme.base") == "light"
+        # And now it offers the way back.
+        assert at.button(key="theme-toggle").label == "🌙"
+    finally:
+        st._config.set_option("theme.base", original)
 
 
 def test_the_opening_message_is_read_as_the_destination(offline):

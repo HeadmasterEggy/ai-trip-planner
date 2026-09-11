@@ -57,7 +57,7 @@ Explore, Saved, Updates or Inspiration: this app has no such features, and a row
 clicked is a lie about what the product does.
 
 ```text
-✈️ AI Trip Planner        brand
+✈️ AI Trip Planner   ☀️     brand, and the theme switch (see below)
 [ 🔍 Search… ]            filters the two lists below, by title and by transcript
 🧳 Trip details ▸          the structured form
 🤖 Planning team ▸         the five specialists
@@ -92,17 +92,33 @@ which is what the rail would eventually read from instead.
 
 ## Theme
 
-Dark, expressed in two places that are not allowed to disagree:
+Light and dark, switched from the rail, in two places that are not allowed to disagree:
 
 - **`.streamlit/config.toml`** owns every colour Streamlit draws itself — the chat input, tabs,
-  expanders, buttons, code blocks, the sidebar background. `base = "dark"` plus the semantic keys.
-- **`ui/theme.py`** owns everything we draw: the palette is `PALETTE`, and the `:root` block is
-  *generated* from it. No rule may write a colour as a literal — a literal is a colour the next
-  re-theme misses, which is exactly how eight light-theme values survived the first pass.
+  expanders, buttons, code blocks, the sidebar background. It pins `base = "dark"` and one accent,
+  and deliberately **nothing else**.
+- **`ui/theme.py`** owns everything we draw: two palettes, `DARK` and `LIGHT`, and the `:root` block
+  is *generated* from whichever one is live. No rule may write a colour as a literal — a literal is
+  a colour the next re-theme misses, which is exactly how eight light-theme values survived the
+  first pass of the dark rewrite.
 
-`tests/test_theme.py` parses the TOML and fails when the two drift. The five values they share
-(page, rail, border, text, accent) are written down twice because neither file can import the other;
-the test is what makes that safe.
+Three things about this arrangement are load-bearing, and none of them are visible in a diff:
+
+1. **Pinning a neutral breaks the toggle.** Streamlit applies `backgroundColor`,
+   `secondaryBackgroundColor` and `textColor` to *both* bases, so the moment one is set, switching
+   the base changes nothing at all — which reads as a broken button rather than a broken palette.
+2. **The neutrals are therefore Streamlit's own**, per base. That is a real dependency on Streamlit's
+   built-in palette, so `tests/test_theme.py` pins the values and fails if an upgrade moves them.
+3. **The live base comes from `theme.base`**, not from `st.context.theme`. The latter reports the
+   *browser's* preference, and in this configuration it reports the opposite of what is on screen —
+   in both directions, which would make the palette wrong every time.
+
+The switch is the ☀️/🌙 button beside the brand. It writes Streamlit's theme config and reruns —
+`st._config` is private, so a release that removes it degrades to a warning rather than a dead
+button — and that makes the theme a property of the **server process, not the session**: on a shared
+deployment one visitor's click changes it for everyone until someone changes it back. That is the
+price of an in-app switch. The alternative Streamlit offers is the theme picker in its own ⋮ menu,
+which is per user, but it only appears when the app defines no theme of its own.
 
 ## Per-agent progress
 
@@ -283,5 +299,6 @@ Streamlit Community Cloud deploys from the repository root: point it at `streaml
 `DEEPSEEK_API_KEY` and any other provider keys under the app's Secrets. With no keys set the app
 still runs — every specialist falls back to deterministic output.
 
-`.streamlit/config.toml` is tracked and is read by the server rather than by the script, so a theme
-change needs a restart and not just a rerun.
+`.streamlit/config.toml` is tracked and is read by the server rather than by the script, so changing
+which base a deployment *starts* in needs a restart. Which base it is currently on does not: that is
+what the rail's switch changes at runtime.
