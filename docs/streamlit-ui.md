@@ -9,142 +9,45 @@ Streamlit at all.
 
 ## The opening screen
 
-The first screen is a greeting, a chat box, and a rail that says it has nothing to list. It used to
-open on `demo_brief()` — Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first
-act was to delete someone else's trip before saying where they actually wanted to go.
+The first screen is a greeting and a chat box, and nothing else. It used to open on `demo_brief()` —
+Tokyo & Kyoto, seven days, $4,000, already filled in — so a visitor's first act was to delete
+someone else's trip before saying where they actually wanted to go.
 
 Nothing is assumed until the traveller says it. The session holds a `BriefPatch` (a draft, every
-field optional) rather than a brief, and it starts empty. The plan rail is not rendered at all,
-because there is no plan to read. No example chips either — a suggestion that fills the page is one
-more thing to read before saying where you want to go, and the chat box already says what it wants.
+field optional) rather than a brief, and it starts empty. **Neither rail is rendered yet**: the plan
+rail because there is no plan, the sidebar because everything in it describes a trip that does not
+exist. No example chips either — a suggestion that fills the page is one more thing to read before
+saying where you want to go, and the chat box already says what it wants.
 
 A turn has two shapes. If the draft is complete the orchestrator runs, the reply describes the plan,
-and the plan rail arrives with it. If something required is still missing, nothing is planned at all:
+and both rails arrive with it. If something required is still missing, nothing is planned at all:
 the reply asks for the first missing field — by name, in the traveller's language — and the answer is
 merged into the draft for the next turn. "Tokyo" alone is enough to start, because the local parser
 reads a short opening message that named no other field as the destination; a greeting is not, and
 mid-conversation words like "cheaper" are never read as a place.
 
 ```text
-  ┌ rail ────────────┐
-  │ ✈️ AI Trip Planner│        ✈️
-  │ [ Search… ]      │   Where to today?
-  │ 🧳 Trip details   │   Tell me where you want to go and roughly when. …
-  │ 🤖 Planning team  │   [ Where would you like to go? ]
-  │ ⚙️ Setup          │
-  │ No chats yet.    │  > Tokyo
-  │ [ ＋ New chat ]   │    When would you like to travel? Dates as YYYY-MM-DD …
-  └──────────────────┘  > 2026-11-10 to 2026-11-17, 2 people, budget $4000
-                          … five specialists run, and the plan rail appears …
+        ✈️
+   Where to today?
+   Tell me where you want to go and roughly when. …
+   [ Where would you like to go? ]
+
+> Tokyo
+  When would you like to travel? Dates as YYYY-MM-DD … I'll also need how many people
+  are travelling and your total budget in USD.
+> 2026-11-10 to 2026-11-17, 2 people, budget $4000
+  … five specialists run, and the trip rails appear …
 ```
 
 **Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. The
-structured path still exists, behind `🧳 Trip details` in the rail — and every one of its fields
-starts empty. A prefilled form is a trip somebody else chose, and a traveller who submits it without
-reading plans a trip they never asked for. Submitting it incomplete is refused with the same words
-the chat asks in, because both go through `contracts.missing_fields`.
+structured path still exists, but it arrives with the first plan, collapsed inside the sidebar — and
+every one of its fields starts empty. A prefilled form is a trip somebody else chose, and a traveller
+who submits it without reading plans a trip they never asked for. Submitting it incomplete is refused
+with the same words the chat asks in, because both go through `contracts.missing_fields`.
 
-**Why the plan rail waits.** A rail is only worth its space once it describes something. Before the
-first plan the conversation takes the whole width, which is what makes the first screen read as a
-chat rather than as an empty dashboard. The left rail is navigation instead of trip content, so it
-is there from the start: hiding it would hide the history, and "go back to that conversation" has to
-be reachable from the landing screen.
-
-## The rail
-
-The left rail is the navigation, and every row in it does something. There is deliberately no
-Explore, Saved, Updates or Inspiration: this app has no such features, and a row that cannot be
-clicked is a lie about what the product does.
-
-```text
-✈️ AI Trip Planner   ☀️     brand, and the theme switch (see below)
-[ 🔍 Search… ]            filters the two lists below, by title and by transcript
-🧳 Trip details ▸          the structured form
-🤖 Planning team ▸         the five specialists
-⚙️ Setup ▸                 model routing, tools, tracing
-TRIPS            1        a conversation that produced a plan
-  🧳 Tokyo                 ← the open one, highlighted, not a button
-     2026-11-10 – 2026-11-17
-CHATS            2        a conversation still being collected
-  💬 five days in Lisbon
-     In progress
-[ ＋ New chat ]            pinned to the bottom
-```
-
-A row's title is derived, never stored: the destination once there is a plan, otherwise the first
-thing the traveller said, otherwise `Untitled`. The split into `Trips` and `Chats` falls out of the
-same rule — a conversation with a plan *is* a trip — so there is no state to keep in sync, and
-`ui/history.py` stays a set of pure functions over plain data.
-
-**One conversation is open at a time.** Session state holds the open one; `history` holds the rest,
-newest first. Starting a new chat or opening an old one first copies the open conversation into
-`history` — the copy is what makes it safe, because `messages` is the one container the turn loop
-keeps appending to. The open conversation is drawn as the highlighted row rather than as a button,
-so it never appears twice.
-
-**Leaving a paused run drops its thread.** A paused escalation's checkpoint belongs to the
-conversation being left; keeping it would let an answer resume a run for a trip that is no longer on
-screen, and would leave the checkpoint in the process-wide store for the life of the process.
-
-`history` is bounded at 50 like the memory store, and it lives in session state, so a refresh loses
-it. That is the same limitation as everything else here — see **Durable memory** in the roadmap,
-which is what the rail would eventually read from instead.
-
-## Theme
-
-Light and dark, switched from the rail, in two places that are not allowed to disagree:
-
-- **`.streamlit/config.toml`** owns every colour Streamlit draws itself — the chat input, tabs,
-  expanders, buttons, code blocks, the sidebar background. It pins `base = "dark"` and one accent,
-  and deliberately **nothing else**.
-- **`ui/theme.py`** owns everything we draw: two palettes, `DARK` and `LIGHT`, and the `:root` block
-  is *generated* from whichever one is live. No rule may write a colour as a literal — a literal is
-  a colour the next re-theme misses, which is exactly how eight light-theme values survived the
-  first pass of the dark rewrite.
-
-Three things about this arrangement are load-bearing, and none of them are visible in a diff:
-
-1. **Pinning a neutral breaks the toggle.** Streamlit applies `backgroundColor`,
-   `secondaryBackgroundColor` and `textColor` to *both* bases, so the moment one is set, switching
-   the base changes nothing at all — which reads as a broken button rather than a broken palette.
-2. **The neutrals are therefore Streamlit's own**, per base. That is a real dependency on Streamlit's
-   built-in palette, so `tests/test_theme.py` pins the values and fails if an upgrade moves them.
-3. **The live base comes from `theme.base`**, not from `st.context.theme`. The latter reports the
-   *browser's* preference, and in this configuration it reports the opposite of what is on screen —
-   in both directions, which would make the palette wrong every time.
-
-The switch is the ☀️/🌙 button beside the brand. It writes Streamlit's theme config and reruns —
-`st._config` is private, so a release that removes it degrades to a warning rather than a dead
-button — and that makes the theme a property of the **server process, not the session**: on a shared
-deployment one visitor's click changes it for everyone until someone changes it back.
-
-### Who decides the theme
-
-Streamlit resolves a theme from two things — the app's `[theme]` config and the *user's* per-browser
-preference (the System / Light / Dark row in its ⋮ menu, kept as `stActiveTheme-/-v2`) — and which
-one wins turns on a single question: **does the app pin a theme of its own?** Pinning anything at the
-top level of `[theme]`, even just `primaryColor`, hides the picker and makes the app's config
-authoritative. Declaring `[theme.light]` and `[theme.dark]` says "I support both" instead: the picker
-appears and the user's preference decides.
-
-That is why it cannot be both. An in-app button *is* the app deciding, so it needs the first mode; a
-per-user picker is the user deciding, and in the second mode changing the base has no visible effect
-at all. Measured four ways, by reading the computed background of `.stApp`:
-
-| `.streamlit/config.toml` | picker in ⋮ | the base flip | who decides |
-| --- | --- | --- | --- |
-| nothing at all | present | no effect | the user (System follows the OS) |
-| `primaryColor` only | hidden | works | the app |
-| top-level neutral colours | hidden | **no effect** | the app, frozen to one look |
-| `[theme.light]` + `[theme.dark]` | present | no effect | the user |
-
-This app is the second row. The third is the trap: pinning a neutral makes the app authoritative
-*and* immune to the base, so the button looks broken. The fourth is where to move if per-user themes
-matter more than the button — our palettes survive it, because the per-base tables take our accent
-and neutrals for each mode; what is lost is the button, and `theme.base` stops being the truth about
-what is on screen. Our CSS would then need the live palette from `st.context.theme.type` (the user's
-choice) instead, which is only as good as the situation: it reports the *browser's* preference,
-which is the opposite of what is drawn whenever the app overrides it.
+**Why the rails wait.** A rail is only worth its space once it describes something. Before the first
+plan the conversation takes the whole width, which is also what makes the first screen read as a chat
+rather than as an empty dashboard.
 
 ## Per-agent progress
 
@@ -197,8 +100,8 @@ ids used to be a fixed `trip-demo`/`demo-user` pair, which meant that on a share
 traveller's confirmed stay could appear in the next one's plan.
 
 Both stores are bounded as well — the memory store evicts its oldest trip and user at a cap, and a
-paused run's checkpoint is dropped when the pause is answered or superseded, including by leaving
-the conversation (`New chat`, or opening another one).
+paused run's checkpoint is dropped when the pause is answered or superseded, including by
+`Start a new trip`.
 
 ## Three views of one plan
 
@@ -237,19 +140,22 @@ export that drops the caveats is a different document from the one being reviewe
 
 ## Layout
 
-Two rails around a conversation; only one of them waits.
+Two rails around a conversation, and neither of them exists until the first plan.
 
-The **left rail** is the sidebar, which Streamlit collapses natively. It is navigation — history,
-search, `New chat`, and the trip's own panels behind it — so it is there from the first render. The
-brand sits at the top of it, because that is already the page's top-left corner and a full-width
-title was spending vertical space the conversation needed.
+The **left rail** is the sidebar, which Streamlit collapses natively: visible while you are
+adjusting the trip, out of the way while you are reading the plan. Nothing in it is required —
+every field can simply be said to the planner, which is why the form is a collapsed expander rather
+than the front of the page, and why every field in it is empty. The brand sits at the top of it,
+because that is already the page's top-left corner and a full-width title was spending vertical
+space the conversation needed.
 
-The **right rail** holds the plan, and it arrives with the first plan: before that there is nothing
-to put beside the conversation. It collapses through a chevron on its edge, and Streamlit has no
-second sidebar, so it is two column ratios and a session flag: `[1, 0.85]` open, `[1, 0.045]` closed.
+The **right rail** holds the plan and collapses the same way, through a chevron on its edge.
+Streamlit has no second sidebar, so it is two column ratios and a session flag: `[1, 0.85]` open,
+`[1, 0.045]` closed.
 
 The **conversation** sits between them and takes the width the plan gives back — all of it, before
-the first plan. `New chat` returns to that state while keeping the conversation it left in the rail.
+the first plan. `Start a new trip` returns to that state: it clears the plan and the draft, so both
+rails go away again and the page is a greeting.
 
 Two details that were wrong first time:
 
@@ -258,10 +164,6 @@ Two details that were wrong first time:
   sibling selector matched during development and silently stopped matching after.
 - It is `position: sticky`. A rail control that scrolls away with the content cannot bring the rail
   back — collapsed, it was the only way to reopen the panel and it sat 240px above the viewport.
-
-The same trick scopes the rail's own rows: `st.container(key="rail-nav")`, `rail-history` and
-`rail-new-chat` each become a `st-key-*` class, so "button" in the rail can be styled without also
-styling the trip form's submit button.
 
 ## Seeing how each specialist decided
 
@@ -316,15 +218,8 @@ Streamlit reruns the whole script on each interaction and blocks during a run, s
 frozen while the team plans and a refresh mid-run loses the stream. Section details are
 `st.expander`; there is no incremental re-render of a single card.
 
-The rail's history is session state, so a refresh loses it — and the nav rows are buttons rather
-than links, so a conversation cannot be bookmarked or opened in a second tab.
-
 ## Deploying
 
 Streamlit Community Cloud deploys from the repository root: point it at `streamlit_app.py`, and add
 `DEEPSEEK_API_KEY` and any other provider keys under the app's Secrets. With no keys set the app
 still runs — every specialist falls back to deterministic output.
-
-`.streamlit/config.toml` is tracked and is read by the server rather than by the script, so changing
-which base a deployment *starts* in needs a restart. Which base it is currently on does not: that is
-what the rail's switch changes at runtime.
