@@ -4,6 +4,7 @@ Where each concern lives, and the rule that keeps it there.
 
 ```text
 streamlit_app.py                  entry point (Streamlit Cloud looks for this name)
+assets/                           the logo: as supplied, and the render it is served as
 src/trip_planner/
   contracts.py                    Pydantic models crossing every boundary
   ports.py                        MapsPort, BookingPort, MemoryStore protocols

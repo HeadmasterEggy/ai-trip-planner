@@ -67,9 +67,22 @@ from trip_planner.ui.render import (
 from trip_planner.ui.theme import CSS
 from trip_planner.workflow import OrchestratorOptions, forget_thread
 
-st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
+# The mark, pinned to the top-left of the app by `st.logo` -- in the rail when it
+# is open, in the header when it is not, so it is there from the first screen
+# rather than arriving with the first plan.
+#
+# It is the 128px render, not the file as supplied: that one is 837KB (a
+# 1279x1230 PNG inside an SVG wrapper), `st.logo` inlines an SVG's bytes into
+# every rerun -- measured at 1.49MB per rerun -- and the mark is drawn at 32px.
+# A PNG goes through Streamlit's media endpoint instead: fetched once, 14.6KB,
+# and the browser caches it. `assets/ai-trip-planner-logo.svg` is kept beside it
+# as the source; `assets/README.md` has the command that regenerates the render.
+LOGO = Path(__file__).parent / "assets" / "ai-trip-planner-logo.png"
+
+st.set_page_config(page_title="AI Trip Planner", page_icon=str(LOGO), layout="wide")
 load_dotenv()
 st.markdown(CSS, unsafe_allow_html=True)
+st.logo(str(LOGO), size="large")
 
 logger = logging.getLogger(__name__)
 
@@ -332,12 +345,15 @@ def render_row(conversation: Conversation, *, is_active: bool) -> None:
 def render_rail() -> TripBrief | None:
     """The left rail: navigation, history, and the trip's own details.
 
-    It is always there, because it is navigation rather than trip content -- the
-    plan rail still waits for a plan. Nothing in it is invented either: an empty
-    history says so, and the form starts empty.
+    It arrives with the first plan and then stays, because it is navigation
+    rather than trip content: the plan rail is the one that leaves. Nothing in it
+    is invented either: an empty history says so, and the form starts empty.
     """
     with st.sidebar:
-        st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
+        # The mark above this is `st.logo`, which draws on every screen. The name
+        # cannot join it there -- `st.logo` takes an image and nothing else -- so
+        # it heads the rail, which is the column that mark sits in.
+        st.markdown('<div class="tp-brand">AI Trip Planner</div>', unsafe_allow_html=True)
         st.text_input(
             "Search trips and chats",
             key="rail-search",
