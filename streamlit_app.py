@@ -64,16 +64,47 @@ from trip_planner.ui.render import (
     timeline,
     trace_block,
 )
-from trip_planner.ui.theme import CSS
+from trip_planner.ui.theme import DEFAULT_THEME, stylesheet
 from trip_planner.workflow import OrchestratorOptions, forget_thread
 
 st.set_page_config(page_title="AI Trip Planner", page_icon="✈️", layout="wide")
 load_dotenv()
-st.markdown(CSS, unsafe_allow_html=True)
 
 logger = logging.getLogger(__name__)
 
 LABELS = {s.name: s.label for s in ALL_SPECIALISTS}
+
+
+def active_theme() -> str:
+    """Which palette to draw: the base the server is actually rendering with.
+
+    Read from the config rather than from `st.context.theme`, which reports the
+    browser's *preference*. In this configuration that is the opposite of what is
+    on screen, in both directions, so a palette chosen from it would be wrong
+    every time.
+    """
+    return "light" if str(st.get_option("theme.base")).lower() == "light" else DEFAULT_THEME
+
+
+def switch_theme(target: str) -> None:
+    """Flip the app's base theme and redraw.
+
+    Streamlit's theme is server config rather than session state, so this is the
+    only handle on it -- and that means the choice belongs to the process: on a
+    shared deployment one visitor's click changes it for everyone until someone
+    changes it back. `st._config` is private, so a Streamlit release that removes
+    it degrades to a message rather than a dead button.
+    """
+    try:
+        st._config.set_option("theme.base", target)
+    except Exception as error:  # noqa: BLE001 - a downgraded app beats a broken one
+        logger.warning("Could not switch the theme to %s: %s", target, error)
+        st.warning("This Streamlit version cannot switch the theme at runtime.")
+        return
+    st.rerun()
+
+
+st.markdown(stylesheet(active_theme()), unsafe_allow_html=True)
 
 
 def _load_cloud_secrets() -> None:
@@ -337,7 +368,20 @@ def render_rail() -> TripBrief | None:
     history says so, and the form starts empty.
     """
     with st.sidebar:
-        st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
+        light = active_theme() == "light"
+        brand, theme_slot = st.columns([5, 1], vertical_alignment="center")
+        with brand:
+            st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
+        with theme_slot:
+            # Icon-only: the tooltip says what it does, and a labelled button
+            # would take a row of its own in a rail whose rows are navigation.
+            if st.button(
+                "🌙" if light else "☀️",
+                key="theme-toggle",
+                help="Switch to dark mode" if light else "Switch to light mode",
+            ):
+                switch_theme("dark" if light else "light")
+
         st.text_input(
             "Search trips and chats",
             key="rail-search",

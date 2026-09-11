@@ -31,6 +31,8 @@ negotiated, act on what needs a decision, and take the plan with you.
 12. A dark navigation rail: brand, search, `New chat`, the trip's panels behind it, and this
     session's trips and chats as clickable rows. Every row does something — there is no Explore or
     Saved, because there is nothing behind them.
+13. A light/dark switch in that rail, with a palette per base. The one control that is not
+    per-session: Streamlit's theme is server config, so the choice belongs to the process.
 
 ## Next
 
