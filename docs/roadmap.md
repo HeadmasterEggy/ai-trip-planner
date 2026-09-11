@@ -26,8 +26,9 @@ negotiated, act on what needs a decision, and take the plan with you.
    assumptions it corrected.
 10. A run says what each section cost: which route would answer it and how long it took, in the
    reasoning view and in the exported plan.
-11. An opening screen that assumes nothing: no prefilled demo trip, a greeting instead of a form, and
-    a conversation that collects the trip one answer at a time and asks for whatever is missing.
+11. An opening screen that assumes nothing: no prefilled demo trip, no example chips, no rails before
+    the first plan, and a conversation that collects the trip one answer at a time and asks for
+    whatever is missing.
 
 ## Next
 

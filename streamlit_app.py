@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -27,9 +27,17 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from trip_planner.chat import run_trip_chat_stream
-from trip_planner.contracts import BriefPatch, ChatRequest, TripBrief, TripPlan, brief_problem
+from trip_planner.contracts import (
+    FIELD_NAMES,
+    BriefPatch,
+    ChatRequest,
+    TripBrief,
+    TripPlan,
+    brief_from_draft,
+    brief_problem,
+    missing_fields,
+)
 from trip_planner.decisions import apply_decision
-from trip_planner.demo import TRIP_LENGTH_DAYS, TRIP_START_OFFSET_DAYS
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
@@ -109,53 +117,54 @@ st.session_state.setdefault("pending_escalation", None)
 
 
 # --------------------------------------------------------------------------
-# Sidebar: who is on the team, and what this deployment is actually wired to.
+# The rails. Neither exists before the first plan: the opening screen is the
+# conversation, and a rail is only worth its space once it describes something.
 # --------------------------------------------------------------------------
 def render_brief_form() -> TripBrief | None:
     """The structured path, for someone who would rather fill in four fields.
 
-    The fields start neutral rather than seeded from the draft. This form
-    *replaces* the trip instead of editing the one the conversation built, so
-    prefilling it with values that are already known invites a half-edit that is
-    neither the draft nor what is on screen. The chat is where a trip
-    accumulates; this is a shortcut for someone who already knows the answers.
+    Every field starts empty. A prefilled form is a trip somebody else chose --
+    the dates, the party size, the budget -- and a traveller who submits it
+    without reading is planning a trip they never asked for. The empty widgets
+    also mean this form and the chat refuse the same things, with the same words.
     """
     today = datetime.now(ZoneInfo("Australia/Sydney")).date()
-    start_default = today + timedelta(days=TRIP_START_OFFSET_DAYS)
-    end_default = start_default + timedelta(days=TRIP_LENGTH_DAYS)
     with st.form("trip"):
         destination = st.text_input(
-            "Destination", value="", placeholder="Tokyo & Kyoto", help="Separate cities with &"
+            "Destination", value="", placeholder="e.g. Tokyo & Kyoto", help="Separate cities with &"
         )
         left, right = st.columns(2)
         with left:
-            start = st.date_input("Start", value=start_default)
+            start = st.date_input("Start", value=None)
         with right:
-            end = st.date_input("End", value=end_default)
+            end = st.date_input("End", value=None)
         people, budget, nationality = st.columns([0.8, 1, 1])
         with people:
-            group = st.number_input("Travellers", 1, 20, 2)
+            group = st.number_input("Travellers", 1, 20, value=None, placeholder="2")
         with budget:
-            total = st.number_input("Budget (USD)", 100, value=3000, step=100)
+            total = st.number_input("Budget (USD)", 100, value=None, step=100, placeholder="3000")
         with nationality:
-            passport = st.text_input("Passport", value="", placeholder="Australian")
+            passport = st.text_input("Passport", value="", placeholder="e.g. Australian")
         submitted = st.form_submit_button("Plan this trip", type="primary", width="stretch")
     if not submitted:
         return None
-    if not destination.strip():
-        st.error("Enter a destination.")
-        return None
-    brief = TripBrief(
-        tripId=st.session_state.trip_id,
-        userId=st.session_state.user_id,
-        destination=destination.strip(),
-        dates=(start.isoformat(), end.isoformat()),
-        groupSize=int(group),
-        budgetTotal=float(total),
+
+    draft = BriefPatch(
+        destination=destination.strip() or None,
+        dates=(start.isoformat(), end.isoformat()) if start and end else None,
+        groupSize=int(group) if group else None,
+        budgetTotal=float(total) if total else None,
         nationality=passport.strip() or None,
     )
-    # The same check the chat path and the orchestrator run, so a form mistake
-    # is reported here rather than surfacing as a failed planning run.
+    # The same completeness and feasibility rules the chat path runs, so the two
+    # entry points cannot drift into accepting different trips.
+    missing = missing_fields(draft)
+    if missing:
+        st.error("Still needed: " + ", ".join(FIELD_NAMES[field] for field in missing) + ".")
+        return None
+    brief = brief_from_draft(
+        draft, trip_id=st.session_state.trip_id, user_id=st.session_state.user_id
+    )
     problem = brief_problem(brief)
     if problem:
         st.error(problem)
@@ -165,54 +174,62 @@ def render_brief_form() -> TripBrief | None:
     return brief
 
 
-with st.sidebar:
-    # The brand sits here rather than above the main column: at the top of the
-    # sidebar it is already the page's top-left corner, and the vertical space
-    # a full-width title took belongs to the conversation.
-    st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
-    st.caption("Five specialists negotiate your trip; conflicts are re-planned before you see it.")
-    st.divider()
+def render_sidebar() -> TripBrief | None:
+    """The left rail: the trip's details, the team, and what this is wired to.
 
-    # Streamlit's sidebar collapses natively, which is what a filter rail wants:
-    # visible when you are adjusting the trip, out of the way when you are
-    # reading the plan. Everything here can also just be said to the planner,
-    # which is why the structured form sits behind an expander: the opening
-    # screen invites a sentence, not four fields.
-    st.markdown("### Trip details")
-    st.caption("Say it in the chat, or fill it in here.")
-    with st.expander("Fill in the details", expanded=False):
-        submitted_brief = render_brief_form()
+    Streamlit's sidebar collapses natively, which is what a filter rail wants:
+    visible while you are adjusting the trip, out of the way while you are reading
+    the plan. Everything here can also just be said to the planner, which is why
+    the structured form is a collapsed expander rather than the front of the page.
+    """
+    with st.sidebar:
+        # The brand sits here rather than above the main column: at the top of the
+        # sidebar it is already the page's top-left corner, and the vertical space
+        # a full-width title took belongs to the conversation.
+        st.markdown('<div class="tp-brand">✈️ AI Trip Planner</div>', unsafe_allow_html=True)
+        st.caption(
+            "Five specialists negotiate your trip; conflicts are re-planned before you see it."
+        )
+        st.divider()
 
-    st.divider()
-    with st.expander("Planning team", expanded=False):
-        for specialist in ALL_SPECIALISTS:
-            st.markdown(f"**{specialist.label}** &nbsp;`{specialist.name}`", unsafe_allow_html=True)
-    st.caption("Model routing")
-    for task, provider in MODEL_ROUTING.items():
-        st.caption(f"`{task}` → {provider}")
+        st.markdown("### Trip details")
+        st.caption("Say it in the chat, or fill it in here.")
+        with st.expander("Fill in the details", expanded=False):
+            submitted_brief = render_brief_form()
 
-    keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
-    st.caption(
-        "Live models configured."
-        if keyed
-        else "No model key set — specialists use their deterministic fallbacks."
-    )
-    mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
-    st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
-    if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
-        st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
+        st.divider()
+        with st.expander("Planning team", expanded=False):
+            for specialist in ALL_SPECIALISTS:
+                st.markdown(
+                    f"**{specialist.label}** &nbsp;`{specialist.name}`", unsafe_allow_html=True
+                )
+        st.caption("Model routing")
+        for task, provider in MODEL_ROUTING.items():
+            st.caption(f"`{task}` → {provider}")
 
-    st.divider()
-    if st.button("Start a new trip", width="stretch"):
-        # Drop the paused run's checkpoint too, rather than leaving a thread
-        # nobody will ever resume sitting in the process-wide checkpointer.
-        if st.session_state.pending_escalation:
-            forget_thread(st.session_state.pending_escalation["threadId"])
-        st.session_state.plan = None
-        st.session_state.draft = BriefPatch()
-        st.session_state.messages = []
-        st.session_state.pending_escalation = None
-        st.rerun()
+        keyed = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("MINIMAX_API_KEY"))
+        st.caption(
+            "Live models configured."
+            if keyed
+            else "No model key set — specialists use their deterministic fallbacks."
+        )
+        mocked = os.getenv("USE_MOCK_TOOLS", "true").lower() != "false"
+        st.caption(f"Tools: {'mock fixtures' if mocked else 'OpenStreetMap'}")
+        if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
+            st.caption(f"Tracing → {os.getenv('LANGSMITH_PROJECT', 'default')}")
+
+        st.divider()
+        if st.button("Start a new trip", width="stretch"):
+            # Drop the paused run's checkpoint too, rather than leaving a thread
+            # nobody will ever resume sitting in the process-wide checkpointer.
+            if st.session_state.pending_escalation:
+                forget_thread(st.session_state.pending_escalation["threadId"])
+            st.session_state.plan = None
+            st.session_state.draft = BriefPatch()
+            st.session_state.messages = []
+            st.session_state.pending_escalation = None
+            st.rerun()
+    return submitted_brief
 
 
 # The plan is a rail, not a fixed column: collapsed it leaves a handle on the
@@ -222,9 +239,11 @@ with st.sidebar:
 #
 # Before the first plan there is nothing to put beside the conversation, so the
 # conversation gets the whole width. That is the opening screen: a greeting and a
-# chat box, not a form next to an empty panel.
+# chat box, and no rails at all -- neither one describes anything yet.
+has_plan = st.session_state.plan is not None
+
 plan_column = None
-if st.session_state.plan is not None:
+if has_plan:
     st.session_state.setdefault("show_plan", True)
     if st.session_state.show_plan:
         chat_column, plan_column = st.columns([1, 0.85], gap="large")
@@ -242,6 +261,8 @@ if st.session_state.plan is not None:
             st.rerun()
 else:
     chat_column = st.container()
+
+submitted_brief = render_sidebar() if has_plan else None
 
 
 # --------------------------------------------------------------------------
@@ -496,30 +517,12 @@ if plan_column is not None:
         render_plan(st.session_state.plan)
 
 
-def example_trips() -> list[str]:
-    """Opening one-liners that fill every required field at once.
-
-    Dated from today rather than hard-coded, for the same reason `demo_brief()`
-    is computed rather than imported: a deployment that has been up for months
-    must not open by suggesting a trip that has already happened. The last one
-    is Chinese because the reply follows the language of the request, so that is
-    worth showing on the first screen rather than only in the docs.
-    """
-    start = datetime.now(ZoneInfo("Australia/Sydney")).date() + timedelta(
-        days=TRIP_START_OFFSET_DAYS
-    )
-    return [
-        f"Tokyo & Kyoto, {start} to {start + timedelta(days=7)}, 2 people, budget $4000",
-        (
-            f"Lisbon, {start + timedelta(days=21)} to {start + timedelta(days=26)}, "
-            "4 people, budget $2500"
-        ),
-        f"去京都，{start} 到 {start + timedelta(days=4)}，三个人，预算 5000",
-    ]
-
-
 def render_hero() -> None:
-    """The first screen: a greeting and a chat box, and nothing already decided."""
+    """The first screen: a greeting and a chat box, and nothing already decided.
+
+    No example trips, no form, no rails. Each of those was a suggestion the
+    traveller had to read past before saying where they want to go.
+    """
     st.markdown(
         '<div class="tp-hero">'
         '<div class="tp-hero__mark">✈️</div>'
@@ -534,13 +537,10 @@ def render_hero() -> None:
 
 with chat_column:
     if not st.session_state.messages:
+        # Nothing else on the first screen: no example chips, no rails. A
+        # suggestion that fills the page is one more thing to read before saying
+        # where you want to go, and the chat box already says what it wants.
         render_hero()
-        # A bare input box does not say what this accepts. Offer the shapes that
-        # actually work, including a non-English one.
-        for index, example in enumerate(example_trips()):
-            if st.button(example, key=f"example-{index}", width="stretch"):
-                st.session_state.pending = example
-                st.rerun()
     else:
         st.markdown("**Conversation**")
         for message in st.session_state.messages:
@@ -552,16 +552,19 @@ with chat_column:
             with st.expander("How the team decided", expanded=False):
                 render_reasoning(st.session_state.plan)
 
-# A clicked example and a typed message take the same path from here.
 prompt = st.chat_input(
     "Tell the team what to change…"
     if st.session_state.plan is not None
     else "Where would you like to go?"
-) or st.session_state.pop("pending", None)
-st.caption(
-    "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
-    "act on with the venue or an official source before booking."
 )
+# With a conversation on screen there are prices and opening hours to be careful
+# about. On the empty first screen there is nothing to verify yet, and a stray
+# footnote under the greeting reads as part of it.
+if st.session_state.messages:
+    st.caption(
+        "Prices, opening hours, entry rules and weather change without notice. Verify anything you "
+        "act on with the venue or an official source before booking."
+    )
 
 if submitted_brief is not None:
     # The form is a complete answer, so it replaces the draft wholesale and the

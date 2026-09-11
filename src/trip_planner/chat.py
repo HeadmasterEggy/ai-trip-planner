@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from .contracts import (
     BRIEF_FIELDS,
+    FIELD_NAMES,
     BriefPatch,
     ChatRequest,
     ChatResponse,
@@ -277,19 +278,14 @@ def changed_fields(before: BriefPatch, after: BriefPatch) -> list[str]:
     return [f for f in BRIEF_FIELDS if getattr(before, f) != getattr(after, f)]
 
 
-# The offline question, one line per required field, and the short name used to
-# mention the ones still to come.
+# The offline question, one line per required field. The short names used to
+# mention the fields still to come come from the shared `FIELD_NAMES`, so a chat
+# question and a form error ask for the same thing in the same words.
 _ASK = {
     "destination": "Where would you like to go?",
     "dates": "When would you like to travel? Dates as YYYY-MM-DD, like 2026-10-01 to 2026-10-05.",
     "groupSize": "How many people are travelling?",
     "budgetTotal": "What is your total budget, in USD?",
-}
-_NEEDED = {
-    "destination": "where you want to go",
-    "dates": "your travel dates",
-    "groupSize": "how many people are travelling",
-    "budgetTotal": "your total budget in USD",
 }
 
 
@@ -307,7 +303,7 @@ def fallback_question_for(missing: list[str]) -> str:
     coming, which is also what makes the offline demo usable end to end.
     """
     question = _ASK[missing[0]]
-    rest = [_NEEDED[field] for field in missing[1:]]
+    rest = [FIELD_NAMES[field] for field in missing[1:]]
     if not rest:
         return question
     return f"{question} I'll also need {_and_list(rest)}."
