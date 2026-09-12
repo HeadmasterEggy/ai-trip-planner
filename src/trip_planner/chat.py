@@ -17,12 +17,15 @@ import logging
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from . import dates, money
 from .contracts import (
     BRIEF_FIELDS,
+    DISPLAY_ONLY_FIELDS,
     FIELD_NAMES,
     BriefPatch,
     ChatRequest,
@@ -34,6 +37,7 @@ from .contracts import (
     draft_problem,
     merge_draft,
     missing_fields,
+    prompt_facts,
 )
 from .memory import memory as default_memory
 from .models import create_routed_chat_model
@@ -54,7 +58,13 @@ class _ModelPatch(BaseModel):
     startDate: str | None = None
     endDate: str | None = None
     groupSize: int | None = None
+    # The amount as stated, and the currency *as the traveller wrote it* -- "¥",
+    # "元", "US$" -- never a code the model chose. Asked for "¥30,000" it answered
+    # "JPY", and the plan was then costed against a seventh of the budget: the
+    # symbol is mapped here, by `money.code_for`, where the app's own reading of
+    # "¥" is the one that counts.
     budgetTotal: float | None = None
+    budgetCurrency: str | None = None
     nationality: str | None = None
 
 
@@ -64,6 +74,70 @@ def _amount(value: str) -> float | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+# What a traveller writes before the figure, and the words that mark a figure as
+# the budget when no currency symbol does.
+_BUDGET_HINT = r"(?:budget|spend|预算(?:改成|调整为|是|为)?|花费|费用|花销)"
+_AMOUNT = r"([\d][\d,]*(?:\.\d+)?)"
+
+
+def _token_near(text: str, start: int, end: int) -> str | None:
+    """The currency written next to an amount, before it or after it."""
+    before = re.search(rf"({money.TOKEN_PATTERN})\s*$", text[:start], re.IGNORECASE)
+    if before:
+        return before.group(1)
+    after = re.search(rf"^\s*({money.TOKEN_PATTERN})", text[end:], re.IGNORECASE)
+    return after.group(1) if after else None
+
+
+def _find_budget(message: str) -> tuple[float, str | None] | None:
+    """The budget the message states, as `(amount, currency token)`.
+
+    A number on its own is not a budget -- "2 people" is not a budget of two --
+    so it takes either the word or a currency to make one. The token comes back
+    as written; `money.code_for` is what knows that "元" is CNY.
+    """
+    hint = re.search(_BUDGET_HINT, message, re.IGNORECASE)
+    if hint:
+        window = message[hint.end() : hint.end() + 24]
+        found = re.search(_AMOUNT, window)
+        if found:
+            amount = _amount(found.group(1))
+            if amount:
+                return amount, _token_near(window, found.start(1), found.end(1))
+    # No keyword, so something has to say the number is money.
+    for found in re.finditer(_AMOUNT, message):
+        amount = _amount(found.group(1))
+        if amount:
+            token = _token_near(message, found.start(1), found.end(1))
+            if token:
+                return amount, token
+    return None
+
+
+def _currency_token(message: str, result: _ModelPatch) -> str | None:
+    """The currency to trust: the message's own spelling before the model's.
+
+    The two disagree in exactly one situation, and it is not a rare one: a symbol
+    that names more than one currency. "¥" is in both the yuan and the yen, the
+    model answered "JPY", and a ¥30,000 budget was planned against USD 192. The
+    traveller's own characters are evidence; a code the model inferred is not.
+    """
+    found = _find_budget(message)
+    return found[1] if found and found[1] else result.budgetCurrency
+
+
+def _budget_fields(amount: float, token: str | None) -> dict[str, Any]:
+    """What the traveller said, and what it is in the unit the plan costs in."""
+    code = money.code_for(token) or "USD"
+    if code not in money.RATES:
+        code = "USD"
+    return {
+        "budgetTotal": money.to_usd(amount, code),
+        "budgetCurrency": code,
+        "budgetAsGiven": amount,
+    }
 
 
 def _clean_destination(value: str) -> str:
@@ -147,33 +221,30 @@ _CN_NUMBERS = {
 }
 
 
-def extract_brief_patch_locally(message: str) -> BriefPatch:
+def extract_brief_patch_locally(message: str, *, today: date | None = None) -> BriefPatch:
     """Parse explicit updates without a model.
 
     This is the fallback when no extraction model is configured and when one
     fails, so it has to handle the phrasings the UI actually suggests. It reads
     both English and Chinese because the reply generator answers in the
     traveller's language and the input follows suit.
+
+    `today` is only for tests: it is what an unstated year is read against.
     """
     patch: dict[str, Any] = {}
 
-    dates = re.search(
-        r"(\d{4}-\d{2}-\d{2})\s*(?:to|through|until|–|—|至|到)\s*(\d{4}-\d{2}-\d{2})",
-        message,
-        re.IGNORECASE,
-    )
-    if dates:
-        patch["dates"] = (dates.group(1), dates.group(2))
+    found = dates.date_range(message, today=today)
+    if found:
+        patch["dates"] = found
 
-    budget = re.search(
-        r"(?:budget|预算(?:改成|调整为|是|为)?)[^\d]{0,12}(?:USD\s*)?\$?\s*([\d,]+(?:\.\d+)?)",
-        message,
-        re.IGNORECASE,
-    ) or re.search(r"\$\s*([\d,]+(?:\.\d+)?)", message)
+    budget = _find_budget(message)
     if budget:
-        patch["budgetTotal"] = _amount(budget.group(1))
+        patch.update(_budget_fields(*budget))
 
-    group = re.search(r"(\d+)\s*(?:people|persons?|travell?ers?|人)", message, re.IGNORECASE)
+    # `人(?!民币)`: "预算 5000 人民币" is a budget in yuan, not 5000 people.
+    group = re.search(
+        r"(\d+)\s*(?:people|persons?|travell?ers?|人(?!民币))", message, re.IGNORECASE
+    )
     if group:
         patch["groupSize"] = _amount(group.group(1))
     if not patch.get("groupSize"):
@@ -224,9 +295,17 @@ def extract_brief_patch_locally(message: str) -> BriefPatch:
 def _extraction_prompt(message: str, draft: BriefPatch) -> str:
     return (
         "Extract only explicit updates to the trip. Use null for every field the user did "
-        "not specify. Do not infer dates, nationality, group size, destination or budget. Budget "
-        "is total USD. Dates must be YYYY-MM-DD. A field that is already known does not have to "
-        "be repeated, and the known values may be empty at the start of a conversation.\n\n"
+        "not specify. Do not infer dates, nationality, group size, destination or budget. A "
+        "field that is already known does not have to be repeated, and the known values may be "
+        "empty at the start of a conversation.\n\n"
+        'Dates: return startDate and endDate exactly as the traveller wrote them -- "10.9" '
+        'stays "10.9", "2026-10-01" stays "2026-10-01" -- and null for both unless the '
+        "message states both ends of a range. Never add a year the traveller did not write: an "
+        "unstated year is the app's decision, not yours.\n"
+        "Budget: the traveller may use any currency. Return budgetTotal as the amount they "
+        'stated, and budgetCurrency as the currency **exactly as they wrote it** -- "¥", '
+        '"元", "US$", "CNY" -- or null if they did not name one. Do not translate a '
+        "symbol into a code.\n\n"
         f"Known so far:\n{draft.model_dump_json()}\n\nUser message:\n{message}"
     )
 
@@ -242,10 +321,21 @@ class ModelExtractor:
         fields = {
             k: v
             for k, v in result.model_dump().items()
-            if v is not None and k not in ("startDate", "endDate")
+            if v is not None and k not in ("startDate", "endDate", "budgetCurrency")
         }
         if result.startDate and result.endDate:
-            fields["dates"] = (result.startDate, result.endDate)
+            # The prompt asks for ISO and the model usually complies, but "10.9"
+            # is not wrong either: the same reader normalises whatever comes back.
+            found = dates.date_range(f"{result.startDate} - {result.endDate}")
+            if found is None:
+                raise ValueError(
+                    f"Could not read the dates {result.startDate!r} to {result.endDate!r}."
+                )
+            fields["dates"] = found
+        if "budgetTotal" in fields:
+            fields.update(
+                _budget_fields(fields.pop("budgetTotal"), _currency_token(message, result))
+            )
         return BriefPatch(**fields)
 
 
@@ -275,7 +365,17 @@ def _extract_patch(message: str, draft: BriefPatch, extractor: BriefExtractor | 
 
 
 def changed_fields(before: BriefPatch, after: BriefPatch) -> list[str]:
-    return [f for f in BRIEF_FIELDS if getattr(before, f) != getattr(after, f)]
+    """Which fields the traveller moved, as the reply prompt names them.
+
+    The display-only fields are left out: they move with the budget, and naming
+    them would tell a model there is a second currency in play -- which is all it
+    needs to start converting (see `contracts.prompt_facts`).
+    """
+    return [
+        field
+        for field in BRIEF_FIELDS
+        if field not in DISPLAY_ONLY_FIELDS and getattr(before, field) != getattr(after, field)
+    ]
 
 
 # The offline question, one line per required field. The short names used to
@@ -283,9 +383,15 @@ def changed_fields(before: BriefPatch, after: BriefPatch) -> list[str]:
 # question and a form error ask for the same thing in the same words.
 _ASK = {
     "destination": "Where would you like to go?",
-    "dates": "When would you like to travel? Dates as YYYY-MM-DD, like 2026-10-01 to 2026-10-05.",
+    # The examples are the point: a traveller who is told "YYYY-MM-DD" types it,
+    # and a traveller who is told "any way you like" types 10.9-12.9, which the
+    # reader now handles.
+    "dates": (
+        "When would you like to travel? Any way you like — '10.9 to 12.9', "
+        "'Oct 9–12', or 2026-10-09 to 2026-10-12."
+    ),
     "groupSize": "How many people are travelling?",
-    "budgetTotal": "What is your total budget, in USD?",
+    "budgetTotal": "What is your total budget? Any currency is fine.",
 }
 
 
@@ -321,20 +427,31 @@ def fallback_reply_for(plan: TripPlan) -> str:
 def reply_prompt(
     message: str, before: BriefPatch, after: BriefPatch, fields: list[str], plan: TripPlan
 ) -> str:
+    # The reply speaks the unit the plan is costed in, and is not told the figure
+    # the traveller used. Handing it both invites it to convert -- and it does, at
+    # a rate it invents: asked to acknowledge "¥3,000" it produced "USD 192" from
+    # the yen rate, having also relabelled CNY as JPY. The traveller's own figure
+    # is shown by the plan itself (`ui/render.budget_as_given`), which is
+    # arithmetic rather than prose.
     context = {
-        "brief": after.model_dump(),
-        "previousBrief": before.model_dump(),
+        "brief": prompt_facts(after),
+        "previousBrief": prompt_facts(before),
         "changedFields": fields,
         "round": plan.round,
-        "estimatedTotal": plan.estTotal,
-        "budgetTotal": plan.budgetTotal,
+        # Every figure below is USD, including the budget: one named in another
+        # currency was converted at intake (see `money.py`). Naming the unit on
+        # every key is what stops a model relabelling a USD section cost as the
+        # traveller's currency -- which it did, enthusiastically, before.
+        "costsCurrency": "USD",
+        "estimatedTotalUsd": plan.estTotal,
+        "budgetTotalUsd": plan.budgetTotal,
         "overrunPct": plan.overrunPct,
         "sections": [
             {
                 "label": s.label,
                 "status": s.status,
                 "summary": s.summary,
-                "estimatedCost": s.estCost,
+                "estimatedCostUsd": s.estCost,
             }
             for s in plan.sections
         ],
@@ -348,8 +465,15 @@ def reply_prompt(
         "Rules:\n"
         "- Detect the language of the traveller's latest message and reply in that same language. "
         "Do not default to English, translate unnecessarily, or mix languages.\n"
-        "- Acknowledge what they asked for before giving the result.\n"
-        "- Be concise but personable (2-4 short sentences); sound like a thoughtful travel "
+        "- Acknowledge what they asked for before giving the result, and then confirm the dates "
+        "and the budget **from the plan context** -- `brief.dates` and `budgetTotalUsd` -- rather "
+        'than working them out from the message again. The traveller wrote "10.9-12.9"; the '
+        "plan holds the year it was read as, and quoting your own reading instead is how a reply "
+        "ends up naming a different year from the plan it is describing.\n"
+        "- Every figure in the plan is USD, including the budget. If the traveller named their "
+        "budget in another currency, say only that it has been converted into USD -- never "
+        "restate their figure, never convert between currencies, and never estimate a rate. "
+        "The plan itself shows them the conversion.\n"
         "partner, not a status template.\n"
         "- Mention only facts supported by the plan context below. Never invent bookings, prices, "
         "availability or certainty.\n"
@@ -382,7 +506,8 @@ def question_prompt(message: str, draft: BriefPatch, missing: list[str]) -> str:
         "- Ask for the missing details listed below, in that order, and keep it to 1-3 short "
         "sentences. Do not ask for anything else.\n"
         "- Never guess, assume or state a value for a missing detail as though the traveller had "
-        "given it. Budget is total USD and dates are YYYY-MM-DD.\n"
+        "given it. Do not ask for a particular date format or currency: take dates and the "
+        "budget however they are written.\n"
         "- Do not mention prompts, models, agents, orchestration or implementation details.\n\n"
         f"Traveller's latest message:\n{message}\n\n"
         f"Already known (JSON):\n{json.dumps(known, ensure_ascii=False)}\n\n"
@@ -495,7 +620,7 @@ class ChatStream:
         if generate is None:
             return reply
         try:
-            return generate(
+            written = generate(
                 reply_prompt(
                     self._message,
                     self._before,
@@ -507,6 +632,23 @@ class ChatStream:
         except Exception as error:  # noqa: BLE001 - a reply failure must not lose the plan
             logger.warning("Natural-language reply failed; using a local fallback: %s", error)
             return reply
+        stated = (
+            {(self._draft.budgetAsGiven, self._draft.budgetCurrency)}
+            if self._draft.budgetAsGiven and self._draft.budgetCurrency
+            else set()
+        )
+        invented = [claim for claim in money.foreign_claims(written) if claim not in stated]
+        if invented:
+            # Quoting the traveller's own figure is the acknowledgement the whole
+            # feature exists for, and it is allowed. Anything else in a foreign
+            # currency means the model has started converting, which it cannot be
+            # trusted to do -- the plan shows the real conversion, computed
+            # (`ui/render.budget_as_given`), and this prose is replaced.
+            logger.warning(
+                "Reply invented a currency conversion (%s); using a local fallback.", invented
+            )
+            return reply
+        return written
 
 
 def run_trip_chat_stream(

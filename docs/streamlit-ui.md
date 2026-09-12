@@ -231,6 +231,11 @@ separate four hues. A transport leg and an activity only look like a clash when 
 a column — which is exactly what the orchestrator's conflict detection is
 looking at, so this is the view that makes its work legible.
 
+The budget block shows the figure the traveller used beside the one it became --
+`$244.08 over budget (≈ ¥30,000)` -- whenever they named a currency. Everything is planned in
+USD, so that conversion happened at intake; showing both is the difference between a
+conversion and a silent swap. The same line is in the exported plan.
+
 **By specialist** keeps the per-agent proposals, and leads with a breakdown of
 which section is driving the total. A single budget bar says a plan is over; it
 does not say who to argue with, which is the only actionable question.
