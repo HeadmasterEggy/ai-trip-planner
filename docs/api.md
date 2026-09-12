@@ -29,7 +29,7 @@ A trip reaches the planner one of two ways, and a request may carry both — a c
 
 | Field | Meaning |
 | --- | --- |
-| `brief` | A complete, validated `TripBrief`. The form path, and the shortest route for a script. |
+| `brief` | A complete, validated `TripBrief`. The shortest route for a script, and for a caller that already holds one; the UI itself now sends only a `draft`. |
 | `draft` | A `BriefPatch`: the fields stated so far, any of them optional. Send the previous response's `draft` back and the conversation accumulates. |
 | `userId` | Who is talking. Read only when no complete `brief` carries an identity; long-term preferences are stored per user. |
 
@@ -135,9 +135,9 @@ when the run paused for a human, and `stream.thread_id` is the thread to resume.
 Feasibility is checked before any of that runs. `contracts.draft_problem(draft)` and
 `contracts.brief_problem(brief)` return a traveller-facing reason, or `None`, and the entry points
 raise `ValueError` with it rather than letting a specialist discover the problem four agents deep.
-The form and chat intake call the same functions, so all three paths refuse an impossible trip — an
-end before its start, or more cities in the `&`-separated destination than the trip has nights —
-with one message.
+Chat intake calls them on every turn, so an impossible trip is refused with one message — an end
+before its start, or more cities in the `&`-separated destination than the trip has nights — rather
+than failing four agents deep.
 
 ## What comes back
 

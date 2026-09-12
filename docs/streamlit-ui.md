@@ -40,11 +40,10 @@ mid-conversation words like "cheaper" are never read as a place.
   … five specialists run, and both rails appear …
 ```
 
-**Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. The
-structured path still exists, behind `🧳 Trip details` in the rail — and every one of its fields
-starts empty. A prefilled form is a trip somebody else chose, and a traveller who submits it without
-reading plans a trip they never asked for. Submitting it incomplete is refused with the same words
-the chat asks in, because both go through `contracts.missing_fields`.
+**Why a greeting rather than a form.** Four fields is a form; a sentence is a conversation. There
+used to be a structured form behind the rail as well, and it is gone: it was a second way to describe
+a trip, which meant a second place for the completeness rules to live and a second thing to keep in
+step with the chat. Everything the orchestrator needs is now said in one place.
 
 **Why the plan rail waits.** A rail is only worth its space once it describes something. Before the
 first plan the conversation takes the whole width, which is what makes the first screen read as a
@@ -64,9 +63,10 @@ left with it would strand the trip it had just parked. So the gate is "a plan, o
 navigate to".
 
 ```text
-[logo] AI Trip Planner    brand: `st.logo` draws the mark, this is its name
+[logo] AI Trip Planner    the mark (`st.logo`) and the wordmark beside it
 [ 🔍 Search… ]            filters the two lists below, by title and by transcript
-🧳 Trip details ▸          the structured form
+💬 Chats             1    the conversation page: the last one, plus the rail's list
+🧳 Trips                  the trip page: every conversation that became a plan
 🤖 Planning team ▸         the five specialists
 ⚙️ Setup ▸                 model routing, tools, tracing
 TRIPS            1        a conversation that produced a plan
@@ -78,10 +78,18 @@ CHATS            2        a conversation still being collected
 [ ＋ New chat ]            pinned to the bottom
 ```
 
-**The mark and the name are two elements, because Streamlit's logo API takes an image and nothing
-else.** `st.logo` pins the mark to the top-left corner of the app — inside the rail when it is open,
-in the header when it is not, so it is there from the first screen and does not arrive with the
-first plan. The name heads the rail below it. The favicon is the same file.
+**Chats and Trips are the two pages, and they are the only two rows.** The badge on `Chats` is the
+count of conversations; `Trips` opens the grid below. Both are drawn the way the list draws the open
+conversation — an accent edge on a raised row — so "which page am I on" reads the same way as "which
+conversation am I in".
+
+**The mark and the name are one lockup, in two elements.** `st.logo` pins the mark to the top-left
+corner of the app — inside the rail when it is open, in the header when it is not, so it is there
+from the first screen and does not arrive with the first plan. The API takes an image and nothing
+else, so the wordmark is drawn by a `::after` rule on the logo's own wrapper (`theme.py`), which is
+the one place that knows where the mark ended up. It is decoration rather than text: it is not
+selectable, not translatable, and a screen reader reads the image's alt text and not this. The
+favicon is the same file.
 
 The file it serves is a 128px render, not the one supplied: that one is **837KB** — a 1279×1230 PNG
 inside an SVG wrapper, so not vector art — and `st.logo` inlines an SVG's bytes into every rerun,
@@ -107,6 +115,36 @@ screen, and would leave the checkpoint in the process-wide store for the life of
 `history` is bounded at 50 like the memory store, and it lives in session state, so a refresh loses
 it. That is the same limitation as everything else here — see **Durable memory** in the roadmap,
 which is what the rail would eventually read from instead.
+
+## Your trips
+
+The `Trips` row opens a page rather than a conversation: a title, `＋ New trip`, and one card per
+conversation that produced a plan. It is the same set the rail's `Trips` section lists, drawn as a
+grid — the rail is for switching, this is for looking.
+
+```text
+Your trips                                        [ ＋ New trip ]
+All trips
+┌───────────────────────┐ ┌───────────────────────┐
+│ 🧳                    │ │                       │
+│ Tokyo                 │ │                       │
+│ 2026-11-10 – … · 8 days│ │                       │
+├───────────────────────┤ └───────────────────────┘
+│      Open trip        │
+└───────────────────────┘
+```
+
+**A card has no photograph, and says so by not pretending to have one.** There is no image source in
+this project, so a cover is a gradient from one of six palette slots into `cover-deep`, chosen by
+`history.cover_index` — a CRC of the destination rather than `hash()`, which is salted per process
+and would repaint Sydney a different colour on every restart.
+
+**No Calendar, Receipts, or "Booked only".** This app books nothing and holds no receipts, and a
+control that cannot do anything is a lie about what the product does. The card's one action is the
+one that exists: open the trip.
+
+The page stops before the chat input — a page, not a conversation, has nothing to type into — and the
+plan rail is not drawn beside it, so the cards get the width.
 
 ## Theme
 
@@ -241,9 +279,10 @@ Two details that were wrong first time:
 - It is `position: sticky`. A rail control that scrolls away with the content cannot bring the rail
   back — collapsed, it was the only way to reopen the panel and it sat 240px above the viewport.
 
-The same trick scopes the rail's own rows: `st.container(key="rail-nav")`, `rail-history` and
-`rail-new-chat` each become a `st-key-*` class, so "button" in the rail can be styled without also
-styling the trip form's submit button.
+The same trick scopes the rail's own rows: `st.container(key="rail-nav")`, `rail-history`,
+`rail-new-chat` and the nav rows each become a `st-key-*` class, so "button in the rail" can be
+styled without also styling every other button on the page — which is what the nav rows, the trip
+cards and the plan rail's own handle all rely on.
 
 ## Seeing how each specialist decided
 

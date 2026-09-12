@@ -14,14 +14,14 @@ deterministic path.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from trip_planner.chat import fallback_question_for
-from trip_planner.contracts import FIELD_NAMES, BriefPatch, missing_fields
+from trip_planner.contracts import BriefPatch
 from trip_planner.demo import TRIP_LENGTH_DAYS, TRIP_START_OFFSET_DAYS
 from trip_planner.workflow import ESCALATION_OVERRUN_PCT
 
@@ -175,46 +175,55 @@ def test_search_filters_the_rail(offline):
     assert any(button.key == f"open-{parked}" for button in at.button)
 
 
-def test_the_form_starts_empty_and_is_refused_in_the_same_words_as_the_chat(offline):
-    """A prefilled form is a trip somebody else chose.
-
-    An empty submission has to be refused through the same contract the chat uses,
-    so the two entry points cannot drift into accepting different trips. The form
-    lives in the rail, so there has to be a plan before it is on screen at all.
-    """
+def test_the_rail_is_chats_and_trips_with_no_trip_form(offline):
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
     at.chat_input[0].set_value(one_message_trip()).run()
 
-    assert [(widget.label, widget.value) for widget in at.sidebar.date_input] == [
-        ("Start", None),
-        ("End", None),
-    ]
-    assert [widget.value for widget in at.sidebar.number_input] == [None, None]
-    assert at.sidebar.text_input(key="form-destination").value == ""
+    keys = {button.key for button in at.sidebar.button}
+    assert {"nav-chats", "nav-trips"} <= keys
+    assert not any(key and key.startswith("form-") for key in keys)
+    assert at.sidebar.date_input == []
+    assert at.sidebar.number_input == []
+    assert "Trip details" not in [expander.label for expander in at.sidebar.expander]
 
-    at.button(key="form-submit").set_value(True).run()
+
+def test_trips_opens_the_trip_grid_and_a_card_reopens_the_trip(offline):
+    at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
+    at.chat_input[0].set_value(one_message_trip()).run()
+    parked = at.session_state["trip_id"]
+    at.button(key="new-chat").set_value(True).run()
+
+    at.button(key="nav-trips").set_value(True).run()
 
     assert not at.exception
-    expected = ", ".join(FIELD_NAMES[field] for field in missing_fields(BriefPatch()))
-    assert [error.value for error in at.sidebar.error] == [f"Still needed: {expected}."]
-    # Nothing was planned from an empty form: the trip is still the first one.
+    assert at.session_state["view"] == "trips"
+    # A page, not a conversation: nothing to type into and no plan beside it.
+    assert at.chat_input == []
+    assert not any(button.key == "toggle-plan" for button in at.button)
+    assert any("Your trips" in element.value for element in at.markdown)
+    assert [b.key for b in at.button if b.key and b.key.startswith("trip-card-")] == [
+        f"trip-card-{parked}"
+    ]
+
+    at.button(key=f"trip-card-{parked}").set_value(True).run()
+
+    assert not at.exception
+    assert at.session_state["view"] == "chat"
+    assert at.session_state["trip_id"] == parked
     assert at.session_state["plan"].brief.destination == "Tokyo"
 
 
-def test_the_form_plans_the_trip_it_was_given(offline):
+def test_the_trip_grid_says_so_when_there_are_no_trips(offline):
+    """Half a trip is a chat, so it is not a card on the Trips page."""
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT).run()
-    at.chat_input[0].set_value(one_message_trip()).run()
+    at.chat_input[0].set_value("Tokyo").run()
 
-    at.sidebar.text_input(key="form-destination").set_value("Lisbon")
-    at.sidebar.date_input(key="form-start").set_value(date(2026, 12, 1))
-    at.sidebar.date_input(key="form-end").set_value(date(2026, 12, 6))
-    at.sidebar.number_input(key="form-group").set_value(3)
-    at.sidebar.number_input(key="form-budget").set_value(2500)
-    at.button(key="form-submit").set_value(True).run()
+    at.session_state["view"] = "trips"
+    at.run()
 
     assert not at.exception
-    assert at.session_state["plan"].brief.destination == "Lisbon"
-    assert at.session_state["plan"].brief.budgetTotal == 2500
+    assert any("No trips yet" in element.value for element in at.markdown)
+    assert not any(b.key and b.key.startswith("trip-card-") for b in at.button)
 
 
 def test_leaving_a_paused_run_does_not_leave_its_thread_behind(offline):
