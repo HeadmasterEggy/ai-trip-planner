@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from .. import money
 from ..contracts import AgentProposal, ProposalItem, TripPlan
 from .theme import STATUS_LABEL
 
@@ -53,6 +54,19 @@ def chip(status: str) -> str:
     return f'<span class="tp-chip tp-chip--{_esc(status)}">{_esc(STATUS_LABEL.get(status, status))}</span>'
 
 
+def budget_as_given(plan: TripPlan) -> str:
+    """The budget in the traveller's own words, when they named a currency.
+
+    Everything is planned in USD, so a budget of "¥3,000" becomes about USD 420
+    before any rule sees it. Showing the figure they actually said, next to the
+    one it became, is the difference between a conversion and a silent swap.
+    """
+    brief = plan.brief
+    if not brief.budgetCurrency or brief.budgetCurrency == "USD" or not brief.budgetAsGiven:
+        return ""
+    return f" (≈ {money.given(brief.budgetAsGiven, brief.budgetCurrency)})"
+
+
 def budget_block(plan: TripPlan) -> str:
     delta = plan.budgetTotal - plan.estTotal
     over = delta < 0
@@ -65,7 +79,8 @@ def budget_block(plan: TripPlan) -> str:
         f'<span class="tp-budget__total">/ ${plan.budgetTotal:,.2f}</span></span>'
         "</div>"
         f'<div class="tp-bar{" tp-bar--over" if over else ""}"><span style="width:{pct}%"></span></div>'
-        f'<p class="tp-delta{" tp-delta--over" if over else ""}">{wording}</p>'
+        f'<p class="tp-delta{" tp-delta--over" if over else ""}">{wording}'
+        f"{budget_as_given(plan)}</p>"
     )
 
 
@@ -112,7 +127,8 @@ def plan_markdown(plan: TripPlan) -> str:
         "",
         f"{plan.brief.dates[0]} to {plan.brief.dates[1]} · {plan.brief.groupSize} travellers",
         (
-            f"Estimated USD {plan.estTotal:,.2f} of a USD {plan.budgetTotal:,.2f} budget "
+            f"Estimated USD {plan.estTotal:,.2f} of a USD {plan.budgetTotal:,.2f} budget"
+            f"{budget_as_given(plan)} "
             f"({plan.overrunPct:+.2f}%)"
         ),
         "",

@@ -13,6 +13,8 @@ src/trip_planner/
   budget.py                       USD roll-up in cents, negotiation and escalation thresholds
   memory.py                       short-term chat turns, long-term preferences
   chat.py                         message -> trip patch -> ask or plan -> reply
+  dates.py                        whatever the traveller typed -> ISO dates
+  money.py                        any currency -> the USD the plan is costed in
   supervisor.py                   typed delegation tools and the two supervisor loops
   workflow.py                     the LangGraph state machine
   specialists/                    the five agents, one module each

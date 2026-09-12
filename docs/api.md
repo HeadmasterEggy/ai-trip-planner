@@ -56,6 +56,23 @@ returns what is still open, and `contracts.draft_problem(draft)` returns the tra
 a partial draft already cannot be planned — an end before its start, or more cities than nights — so
 a bad span is reported the moment it is said instead of after three more questions.
 
+Two readers sit behind the intake, and each exists because a model cannot be trusted with the
+job:
+
+- **`dates.date_range`** turns whatever the traveller wrote into the ISO pair the contract wants:
+  `2026-10-01`, `Oct 9-12`, `10月9日`, `10.9-12.9`. A two-part date is read day first, and a date
+  with no year is the next one that works rather than one that has passed.
+- **`money`** maps a currency symbol or word to a code, converts the amount to the USD every cost
+  rule works in, and keeps what the traveller said so the plan can show it back. The rates are a
+  static snapshot, not a feed; `money.AS_OF` says when they were taken.
+
+Both are handed to the model as well, as *extraction*: it returns the dates as written and the
+currency as written, and these two decide what that means. Asked for `¥30,000` the model answered
+`JPY` — a seventh of the money — and asked for `10.9-12.9` it answered with a year nobody wrote, so
+neither reading is allowed to come from a prompt. `contracts.prompt_facts` strips the two
+display-only budget fields from everything a model reads, and a reply that names a currency the
+traveller did not is discarded.
+
 Three seams exist for testing, all keyword-only:
 
 ```python

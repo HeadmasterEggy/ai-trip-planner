@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -68,6 +68,11 @@ class TripBrief(BaseModel):
     dates: tuple[str, str]  # [start, end] ISO date
     groupSize: Annotated[int, Field(gt=0)]
     budgetTotal: Annotated[float, Field(gt=0)]
+    # USD is the unit every cost rule works in, but a traveller may name any
+    # currency. When they do, these keep what they actually said so the plan can
+    # show it back -- `money.to_usd` did the conversion at intake.
+    budgetCurrency: str | None = None  # ISO code, "USD" when they named one
+    budgetAsGiven: float | None = None  # the figure in that currency
     nationality: str | None = None
 
 
@@ -75,7 +80,15 @@ class TripBrief(BaseModel):
 # `nationality` is deliberately absent from the second: it changes a visa note,
 # not whether the trip can be planned, so a traveller who never mentions a
 # passport still gets a complete plan instead of a question.
-BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal", "nationality")
+BRIEF_FIELDS = (
+    "destination",
+    "dates",
+    "groupSize",
+    "budgetTotal",
+    "budgetCurrency",
+    "budgetAsGiven",
+    "nationality",
+)
 REQUIRED_BRIEF_FIELDS = ("destination", "dates", "groupSize", "budgetTotal")
 
 # The same four fields as a traveller would name them. Shared so that a chat
@@ -100,6 +113,8 @@ class BriefPatch(BaseModel):
     dates: tuple[str, str] | None = None
     groupSize: int | None = Field(default=None, gt=0)
     budgetTotal: float | None = Field(default=None, gt=0)
+    budgetCurrency: str | None = None
+    budgetAsGiven: float | None = None
     nationality: str | None = None
 
     @classmethod
@@ -110,6 +125,22 @@ class BriefPatch(BaseModel):
     def is_empty(self) -> bool:
         """True when nothing has been stated at all."""
         return not any(getattr(self, field) for field in BRIEF_FIELDS)
+
+
+# Kept for showing the traveller what they said, never for reasoning about.
+DISPLAY_ONLY_FIELDS = ("budgetCurrency", "budgetAsGiven")
+
+
+def prompt_facts(model: TripBrief | BriefPatch) -> dict[str, Any]:
+    """The brief or draft as a model may see it.
+
+    A model handed "¥30,000" converts it, at a rate it invents: measured, it
+    produced "USD 192" using the yen rate while relabelling CNY as JPY, and the
+    figure then turned up in a plan summary. Nothing that reasons about cost needs
+    these two fields -- every cost rule reads `budgetTotal`, which is already USD
+    -- so no prompt gets to see them.
+    """
+    return model.model_dump(exclude=set(DISPLAY_ONLY_FIELDS))
 
 
 def merge_draft(draft: BriefPatch | None, patch: BriefPatch) -> BriefPatch:

@@ -32,7 +32,10 @@ negotiated, act on what needs a decision, and take the plan with you.
     chats as clickable rows, and two pages behind them. Every row does something — there is no
     Explore or Saved, because there is nothing behind them. It arrives with the first plan and then
     stays.
-13. A Trips page: every conversation that became a plan, as a card with a generated cover, the days
+13. Dates read however they are written, and a budget in any currency converted to the USD the
+    plan is costed in -- with the traveller's own figure shown back. Both readings are the
+    app's, not a prompt's: the model extracts, the app interprets.
+14. A Trips page: every conversation that became a plan, as a card with a generated cover, the days
     it covers, and one way back in. The structured form is gone with it — describing a trip happens
     in the chat, in one place rather than two.
 

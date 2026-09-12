@@ -371,6 +371,54 @@ diagnosis with a large, permanent workaround attached to it.
 
 ---
 
+## 14. A model that converted the traveller's money
+
+**Symptom.** "Sydney, 2027-03-01 to 2027-03-04, 2 people, ¥30000" produced a plan costed against
+**USD 192**. Every specialist, every cost rule and the budget bar were faithful to that number, and
+the reply said, correctly, "about USD 192" — which is how the bug survived a first reading of the
+transcript. Nothing errored. The plan was simply for a seventh of the money.
+
+**Why it misled.** The message had just been changed to accept *any* currency, so a wrong conversion
+looks like a rate problem, and the obvious suspects were the rate table and the symbol mapping. Both
+were fine. The figure was already wrong before either ran: the **extraction model** had answered
+`JPY` for `¥`, and `money.to_usd` did exactly what it was told.
+
+**Cause.** Three separate places had handed a judgement to a model that the app was better at:
+
+1. **Which currency a symbol means.** `¥` is yuan and yen. A model asked for an ISO code picks one
+   from its own priors; the app has a table, and the traveller's own characters are the evidence.
+2. **What a bare number means.** `10.9-12.9` has no year, and the extractor supplied one — measured,
+   `2025`, for a trip being planned in 2026. The app's rule (the next year that works) exists
+   precisely so a traveller does not end up with a trip in the past.
+3. **What a conversion is worth.** Given the brief and the traveller's message, the reply model
+   produced its own rate: "about USD 192", the yen rate, with CNY relabelled as JPY in the same
+   sentence.
+
+**Fix.** The model **extracts**; the app **interprets**. Every judgement moved to code:
+
+- The extractor returns the currency *exactly as written* — `"¥"`, `"元"`, `"US$"` — and
+  `money.code_for` maps it. Where the message carries a token, that token overrides the model's
+  answer outright (`chat._currency_token`).
+- The extractor returns dates *exactly as written*, and `dates.date_range` reads them: day first,
+  and an unstated year resolved forward.
+- No prompt is ever shown the two display-only fields. `contracts.prompt_facts` strips
+  `budgetCurrency` and `budgetAsGiven` from everything a model reads — including the supervisor's
+  delegation prompt, which had been serialising the whole brief — and `changed_fields` no longer
+  names them either, because naming them is enough to start a model converting.
+- A reply that names a currency the traveller did not is thrown away and replaced by the plan's own
+  words. Quoting their figure is allowed; that is the acknowledgement the feature exists for.
+
+The rates are still a static snapshot — there is no rate provider in this project — but the
+conversion is now arithmetic with a date on it (`money.AS_OF`) rather than a model's guess, and the
+plan shows the traveller's own figure beside it.
+
+**Two lessons.** *A prompt is not a place to do arithmetic*: anything a model must get exactly right
+belongs in a function with a test, and the prompt should be asked for the raw material instead. And
+*the failure was invisible in the output* — the plan, the bar and the reply all agreed with each
+other, because they all agreed with the wrong number.
+
+---
+
 ## Recurring lessons
 
 **A silent fallback is worse than a crash.** Most of these took time because the

@@ -118,9 +118,15 @@ assuming a destination, a date or a budget.
 
 ```
 Tokyo
-2026-10-01 to 2026-10-05, 2 people, budget $4000
+10.9-12.9, 2 people, budget ¥30000
 去京都，2026-10-01 到 2026-10-05，三个人，预算 5000
 ```
+
+Dates are read however they are written — `2026-10-01`, `Oct 9-12`, `10月9日`, `10.9-12.9` — and the
+budget may be in any currency, converted to the USD the plan is costed in. A date with no year is
+the next one that works rather than one that has passed, a two-part date is read day first (the
+clock this app runs on is Australia/Sydney), and a budget's own currency is shown back next to the
+USD figure it became.
 
 A message becomes an explicit patch of the trip, the patch is merged into what the conversation has
 collected, and the orchestrator runs only once nothing required is missing. Only fields the

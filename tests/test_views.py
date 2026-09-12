@@ -14,10 +14,13 @@ from trip_planner.demo import DEMO_BRIEF, demo_brief
 from trip_planner.memory import InMemoryStore
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.render import (
+    budget_as_given,
+    budget_block,
     budget_breakdown,
     failure_message,
     negotiation,
     negotiation_verdict,
+    plan_markdown,
     scheduled_days,
     step_states,
     steps,
@@ -214,3 +217,28 @@ def test_a_failure_is_explained_or_logged_but_not_dumped(caplog):
     assert "pydantic" not in line
     assert "try again" in line
     assert any("planning failed" in record.getMessage() for record in caplog.records)
+
+
+def test_a_converted_budget_is_shown_with_the_figure_it_came_from():
+    """Everything is planned in USD, so a budget of "¥3,000" becomes about
+
+    USD 420 before any rule sees it. Showing the figure the traveller actually
+    said is the difference between a conversion and a silent swap.
+    """
+    plan = run_orchestrator(
+        DEMO_BRIEF.model_copy(
+            update={"budgetTotal": 417.0, "budgetCurrency": "CNY", "budgetAsGiven": 3000.0}
+        ),
+        OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1),
+    )
+
+    assert "¥3,000" in budget_block(plan)
+    assert "¥3,000" in plan_markdown(plan)
+
+
+def test_a_usd_budget_is_not_labelled_twice():
+    plan = run_orchestrator(
+        DEMO_BRIEF, OrchestratorOptions(specialists=ALL_SPECIALISTS, max_rounds=1)
+    )
+
+    assert budget_as_given(plan) == ""

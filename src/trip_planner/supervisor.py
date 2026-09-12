@@ -16,6 +16,7 @@ or the loop fails, so the workflow keeps running offline.
 
 from __future__ import annotations
 
+import json
 import operator
 import time
 from collections.abc import Callable
@@ -45,6 +46,7 @@ from .contracts import (
     SpecialistTrace,
     TripBrief,
     merge_choices,
+    prompt_facts,
 )
 from .models import create_routed_chat_model
 from .ports import AgentContext, ToolGateway
@@ -418,7 +420,7 @@ def dispatch_with_supervisor(
                     "role": "user",
                     "content": (
                         "Delegate the specialist work required to produce this trip plan.\n"
-                        f"{brief.model_dump_json()}"
+                        f"{json.dumps(prompt_facts(brief))}"
                     ),
                 }
             ]
