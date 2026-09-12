@@ -20,7 +20,7 @@ src/trip_planner/
   ui/                             presentation tokens and rendering helpers
     theme.py                      the palette and the one injected stylesheet
     render.py                     plan -> HTML fragments, no Streamlit
-    history.py                    the rail's conversation list, no Streamlit
+    history.py                    the rail's list and the trip cards, no Streamlit
 tests/                            behaviour tests, no network
 docs/                             architecture, orchestration, UI, observability, debugging
 ```

@@ -28,9 +28,13 @@ negotiated, act on what needs a decision, and take the plan with you.
    reasoning view and in the exported plan.
 11. An opening screen that assumes nothing: no prefilled demo trip, no example chips, and a
     conversation that collects the trip one answer at a time and asks for whatever is missing.
-12. A navigation rail: brand, search, `New chat`, the trip's panels behind it, and this session's
-    trips and chats as clickable rows. Every row does something — there is no Explore or Saved,
-    because there is nothing behind them. It arrives with the first plan and then stays.
+12. A navigation rail: the mark and its wordmark, search, `New chat`, this session's trips and
+    chats as clickable rows, and two pages behind them. Every row does something — there is no
+    Explore or Saved, because there is nothing behind them. It arrives with the first plan and then
+    stays.
+13. A Trips page: every conversation that became a plan, as a card with a generated cover, the days
+    it covers, and one way back in. The structured form is gone with it — describing a trip happens
+    in the chat, in one place rather than two.
 
 ## Next
 

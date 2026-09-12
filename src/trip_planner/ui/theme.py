@@ -53,15 +53,35 @@ PALETTE = {
     "transport": "#0369A1",
     "accommodation": "#7C3AED",
     "dining": "#B45309",
+    # Trip-card covers. There is no photo source, so a card is a gradient from
+    # one of these into `cover-deep`, picked by `history.cover_index`.
+    "cover-1": "#2563EB",
+    "cover-2": "#0891B2",
+    "cover-3": "#059669",
+    "cover-4": "#D97706",
+    "cover-5": "#DB2777",
+    "cover-6": "#7C3AED",
+    "cover-deep": "#1E1B4B",
 }
 
-RADII = {"radius-sm": "6px", "radius-pill": "999px"}
+RADII = {"radius-sm": "6px", "radius-md": "14px", "radius-pill": "999px"}
+
+COVERS = sum(1 for name in PALETTE if name.startswith("cover-") and name != "cover-deep")
 
 
 def _root() -> str:
     """The `:root` custom properties, generated from the two maps above."""
     lines = [f"  --tp-{name}: {value};" for name, value in {**PALETTE, **RADII}.items()]
     return "\n".join(lines)
+
+
+def _covers() -> str:
+    """One modifier class per cover slot, so the card markup names a slot, not a colour."""
+    return "\n".join(
+        f".tp-trip-card--{n} .tp-trip-card__cover {{ background: linear-gradient("
+        f"135deg, var(--tp-cover-{n + 1}), var(--tp-cover-deep)); }}"
+        for n in range(COVERS)
+    )
 
 
 CSS = (
@@ -177,12 +197,24 @@ CSS = (
   color: var(--tp-accent) !important;
 }
 
-.tp-brand {
+/* The name beside the mark. `st.logo` takes an image and nothing else, and an
+   <img> cannot carry ::after, so the wordmark is drawn by the logo's wrapper --
+   in the rail header when the rail is open, in the page header when it is not --
+   and the two never disagree. Without a `link=` there is no stLogoLink to use. */
+:has(> [data-testid="stSidebarLogo"]),
+:has(> [data-testid="stHeaderLogo"]) {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 10px;
+}
+:has(> [data-testid="stSidebarLogo"])::after,
+:has(> [data-testid="stHeaderLogo"])::after {
+  content: "AI Trip Planner";
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
+  white-space: nowrap;
   color: var(--tp-accent);
-  margin-bottom: 2px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -421,6 +453,49 @@ CSS = (
 @media (prefers-reduced-motion: reduce) {
   .tp-dot { animation: none; }
 }
+
+/* Chats / Trips. The page you are on is drawn the way the list draws the open
+   conversation: an accent edge on a raised row. */
+[class*="st-key-navrow-"][class*="-on"] button {
+  background: var(--tp-surface-2) !important;
+  box-shadow: inset 2px 0 0 var(--tp-accent) !important;
+  font-weight: 600 !important;
+}
+[class*="st-key-navrow-"] button p { font-size: 14px !important; }
+
+/* Your trips. A title with its one action, then a grid of cards. */
+.tp-trips__title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+.tp-trips__section {
+  font-size: 14px; font-weight: 600; color: var(--tp-text-dim);
+  margin: 12px 0 10px;
+}
+.tp-trips__empty { color: var(--tp-text-mut); font-size: 14px; padding: 24px 0; }
+.st-key-trips-new button { border-radius: var(--tp-radius-pill) !important; }
+
+.tp-trip-card__cover {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--tp-radius-md);
+  overflow: hidden;
+  color: var(--tp-on-accent);
+}
+.tp-trip-card__mark {
+  position: absolute; top: 14px; right: 16px; font-size: 34px;
+}
+.tp-trip-card__text { position: absolute; left: 16px; bottom: 14px; right: 16px; }
+.tp-trip-card__title {
+  font-size: 17px; font-weight: 700;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.tp-trip-card__meta { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+[class*="st-key-trip-card-"] button {
+  width: 100% !important;
+  border-radius: var(--tp-radius-pill) !important;
+  margin-top: -4px;
+}
+"""
+    + _covers()
+    + """
 </style>
 """
 )

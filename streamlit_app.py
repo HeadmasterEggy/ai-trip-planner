@@ -12,10 +12,8 @@ import html
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -28,21 +26,13 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from trip_planner.chat import run_trip_chat_stream
-from trip_planner.contracts import (
-    FIELD_NAMES,
-    BriefPatch,
-    ChatRequest,
-    TripBrief,
-    TripPlan,
-    brief_from_draft,
-    brief_problem,
-    missing_fields,
-)
+from trip_planner.contracts import BriefPatch, ChatRequest, TripPlan
 from trip_planner.decisions import apply_decision
 from trip_planner.models import MODEL_ROUTING
 from trip_planner.specialists import ALL_SPECIALISTS
 from trip_planner.ui.history import (
     Conversation,
+    cover_index,
     forget,
     matching,
     remember,
@@ -64,7 +54,7 @@ from trip_planner.ui.render import (
     timeline,
     trace_block,
 )
-from trip_planner.ui.theme import CSS
+from trip_planner.ui.theme import COVERS, CSS
 from trip_planner.workflow import OrchestratorOptions, forget_thread
 
 # The mark, pinned to the top-left of the app by `st.logo` -- in the rail when it
@@ -150,77 +140,34 @@ st.session_state.setdefault("trip_id", _trip_id(0))
 # this is the rest of the rail, newest first.
 st.session_state.setdefault("history", [])
 st.session_state.setdefault("pending_escalation", None)
+# Which page the main area shows: the conversation, or the grid of trips.
+st.session_state.setdefault("view", "chat")
 
 
 # --------------------------------------------------------------------------
-# The rail. Navigation rather than a form: the conversation list, a way to start
-# a new one, and the trip's own details behind it.
+# The rail. Navigation: Chats and Trips, the conversation list, and a way to
+# start a new one. Trip details are said in the chat, not filled in here.
 # --------------------------------------------------------------------------
-def render_brief_form() -> TripBrief | None:
-    """The structured path, for someone who would rather fill in four fields.
-
-    Every field starts empty. A prefilled form is a trip somebody else chose --
-    the dates, the party size, the budget -- and a traveller who submits it
-    without reading is planning a trip they never asked for. The empty widgets
-    also mean this form and the chat refuse the same things, with the same words.
-    """
-    today = datetime.now(ZoneInfo("Australia/Sydney")).date()
-    with st.form("trip"):
-        destination = st.text_input(
-            "Destination",
-            key="form-destination",
-            value="",
-            placeholder="e.g. Tokyo & Kyoto",
-            help="Separate cities with &",
-        )
-        left, right = st.columns(2)
-        with left:
-            start = st.date_input("Start", key="form-start", value=None)
-        with right:
-            end = st.date_input("End", key="form-end", value=None)
-        # Two to a row at most: the rail is ~250px, and three inputs in it wrap
-        # their own labels ("Travell / ers").
-        left, right = st.columns(2)
-        with left:
-            group = st.number_input(
-                "Travellers", 1, 20, key="form-group", value=None, placeholder="2"
-            )
-        with right:
-            total = st.number_input(
-                "Budget (USD)", 100, key="form-budget", value=None, step=100, placeholder="3000"
-            )
-        passport = st.text_input(
-            "Passport", key="form-passport", value="", placeholder="e.g. Australian"
-        )
-        submitted = st.form_submit_button(
-            "Plan this trip", key="form-submit", type="primary", width="stretch"
-        )
-    if not submitted:
-        return None
-
-    draft = BriefPatch(
-        destination=destination.strip() or None,
-        dates=(start.isoformat(), end.isoformat()) if start and end else None,
-        groupSize=int(group) if group else None,
-        budgetTotal=float(total) if total else None,
-        nationality=passport.strip() or None,
+def live_conversation() -> Conversation:
+    """The conversation on screen, as a rail row or a trip card would draw it."""
+    return snapshot(
+        st.session_state.trip_id,
+        st.session_state.messages,
+        st.session_state.draft,
+        st.session_state.plan,
     )
-    # The same completeness and feasibility rules the chat path runs, so the two
-    # entry points cannot drift into accepting different trips.
-    missing = missing_fields(draft)
-    if missing:
-        st.error("Still needed: " + ", ".join(FIELD_NAMES[field] for field in missing) + ".")
-        return None
-    brief = brief_from_draft(
-        draft, trip_id=st.session_state.trip_id, user_id=st.session_state.user_id
-    )
-    problem = brief_problem(brief)
-    if problem:
-        st.error(problem)
-        return None
-    if start < today:
-        st.warning("That start date is in the past; planning it anyway.")
-    return brief
+
+
+def all_trips() -> list[Conversation]:
+    """Every planned trip, the open one first, then the rest newest first."""
+    live = live_conversation()
+    trips, _ = split(st.session_state.history)
+    return [live, *trips] if live.is_trip else trips
+
+
+def show(view: str) -> None:
+    st.session_state.view = view
+    st.rerun()
 
 
 def remember_active() -> None:
@@ -264,6 +211,7 @@ def new_chat() -> None:
     st.session_state.messages = []
     st.session_state.chat_seq += 1
     st.session_state.trip_id = _trip_id(st.session_state.chat_seq)
+    st.session_state.view = "chat"
     st.rerun()
 
 
@@ -282,6 +230,7 @@ def open_conversation(trip_id: str) -> None:
     st.session_state.messages = list(reopened.messages)
     st.session_state.draft = reopened.draft
     st.session_state.plan = reopened.plan
+    st.session_state.view = "chat"
     st.rerun()
 
 
@@ -342,18 +291,24 @@ def render_row(conversation: Conversation, *, is_active: bool) -> None:
         open_conversation(conversation.tripId)
 
 
-def render_rail() -> TripBrief | None:
-    """The left rail: navigation, history, and the trip's own details.
+def render_nav() -> None:
+    """Chats and Trips: the two pages this app has, and nothing it does not."""
+    chats = len(st.session_state.history) + (1 if st.session_state.messages else 0)
+    for view, label in (("chat", f"💬 Chats :gray-badge[{chats}]"), ("trips", "🧳 Trips")):
+        state = "on" if st.session_state.view == view else "off"
+        with st.container(key=f"navrow-{view}-{state}"):
+            if st.button(label, key=f"nav-{'chats' if view == 'chat' else view}"):
+                show(view)
+
+
+def render_rail() -> None:
+    """The left rail: Chats and Trips, the conversation list, and New chat.
 
     It arrives with the first plan and then stays, because it is navigation
-    rather than trip content: the plan rail is the one that leaves. Nothing in it
-    is invented either: an empty history says so, and the form starts empty.
+    rather than trip content: the plan rail is the one that leaves. The name sits
+    beside the mark in the header (see `theme.py`), so the rail opens on search.
     """
     with st.sidebar:
-        # The mark above this is `st.logo`, which draws on every screen. The name
-        # cannot join it there -- `st.logo` takes an image and nothing else -- so
-        # it heads the rail, which is the column that mark sits in.
-        st.markdown('<div class="tp-brand">AI Trip Planner</div>', unsafe_allow_html=True)
         st.text_input(
             "Search trips and chats",
             key="rail-search",
@@ -362,9 +317,7 @@ def render_rail() -> TripBrief | None:
         )
 
         with st.container(key="rail-nav"):
-            with st.expander("🧳 Trip details", expanded=False):
-                st.caption("Say it in the chat, or fill it in here.")
-                submitted_brief = render_brief_form()
+            render_nav()
             with st.expander("🤖 Planning team", expanded=False):
                 for specialist in ALL_SPECIALISTS:
                     st.markdown(
@@ -393,7 +346,6 @@ def render_rail() -> TripBrief | None:
         with st.container(key="rail-new-chat"):
             if st.button("＋ New chat", key="new-chat", type="primary"):
                 new_chat()
-    return submitted_brief
 
 
 # The plan is a rail, not a fixed column: collapsed it leaves a handle on the
@@ -411,7 +363,7 @@ has_plan = st.session_state.plan is not None
 has_rail = has_plan or bool(st.session_state.history)
 
 plan_column = None
-if has_plan:
+if has_plan and st.session_state.view == "chat":
     st.session_state.setdefault("show_plan", True)
     if st.session_state.show_plan:
         chat_column, plan_column = st.columns([1, 0.85], gap="large")
@@ -430,7 +382,8 @@ if has_plan:
 else:
     chat_column = st.container()
 
-submitted_brief = render_rail() if has_rail else None
+if has_rail:
+    render_rail()
 
 
 # --------------------------------------------------------------------------
@@ -703,6 +656,61 @@ def render_hero() -> None:
     )
 
 
+def render_trip_card(trip: Conversation, *, is_open: bool) -> None:
+    """One trip: a cover, where and when, and the way back into it."""
+    slot = cover_index(trip.title, COVERS)
+    days = f"{trip.days} day{'s' if trip.days != 1 else ''}"
+    st.markdown(
+        f'<div class="tp-trip-card tp-trip-card--{slot}"><div class="tp-trip-card__cover">'
+        f'<div class="tp-trip-card__mark">{trip.icon}</div>'
+        f'<div class="tp-trip-card__text">'
+        f'<div class="tp-trip-card__title">{html.escape(trip.title)}</div>'
+        f'<div class="tp-trip-card__meta">{html.escape(trip.subtitle)} · {days}</div>'
+        "</div></div></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Open trip", key=f"trip-card-{trip.tripId}", width="stretch"):
+        if is_open:
+            # `show` reruns, so the line below is only reached for a trip that is
+            # in the rail -- which is the only kind `open_conversation` can look
+            # up. The open one is already on screen; it just needs the page back.
+            show("chat")
+        open_conversation(trip.tripId)
+
+
+def render_trips() -> None:
+    """Your trips: every conversation that produced a plan, as a card.
+
+    No Calendar, Receipts or "Booked only": this app books nothing, and a control
+    that does nothing is a lie about what the product does.
+    """
+    title, action = st.columns([1, 0.2], vertical_alignment="center")
+    with title:
+        st.markdown('<div class="tp-trips__title">Your trips</div>', unsafe_allow_html=True)
+    with action, st.container(key="trips-new"):
+        if st.button("＋ New trip", key="new-trip", width="stretch"):
+            new_chat()
+
+    trips = all_trips()
+    if not trips:
+        st.markdown(
+            '<div class="tp-trips__empty">No trips yet — plan one in a chat.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    st.markdown('<div class="tp-trips__section">All trips</div>', unsafe_allow_html=True)
+    open_id = st.session_state.trip_id
+    for row in range(0, len(trips), 3):
+        for column, trip in zip(st.columns(3, gap="medium"), trips[row : row + 3]):
+            with column:
+                render_trip_card(trip, is_open=trip.tripId == open_id)
+
+
+if st.session_state.view == "trips":
+    # A page, not a conversation: nothing to type into below it.
+    render_trips()
+    st.stop()
+
 with chat_column:
     if not st.session_state.messages:
         # Nothing else on the first screen: no example chips, no rails. A
@@ -734,17 +742,6 @@ if st.session_state.messages:
         "act on with the venue or an official source before booking."
     )
 
-if submitted_brief is not None:
-    # The form is a complete answer, so it replaces the draft wholesale and the
-    # turn below is an ordinary planning turn.
-    st.session_state.draft = BriefPatch.from_brief(submitted_brief)
-    plan_trip(
-        f"Plan {submitted_brief.destination} from {submitted_brief.dates[0]} to "
-        f"{submitted_brief.dates[1]} for {submitted_brief.groupSize} travellers "
-        f"with a budget of USD {submitted_brief.budgetTotal:,.0f}.",
-        st.session_state.draft,
-    )
-    st.rerun()
-elif prompt:
+if prompt:
     plan_trip(prompt, st.session_state.draft)
     st.rerun()

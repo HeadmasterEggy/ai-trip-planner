@@ -9,7 +9,9 @@ browser.
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from ..contracts import BriefPatch, TripPlan
@@ -69,6 +71,23 @@ class Conversation:
             return "In progress"
         start, end = self.plan.brief.dates
         return f"{start} – {end}"
+
+    @property
+    def days(self) -> int:
+        """Calendar days the trip covers, both ends included; 0 before a plan."""
+        if self.plan is None:
+            return 0
+        start, end = (date.fromisoformat(value) for value in self.plan.brief.dates)
+        return (end - start).days + 1
+
+
+def cover_index(destination: str, slots: int) -> int:
+    """A stable palette slot for a trip card's cover.
+
+    `hash()` is salted per process, so a card would change colour on every
+    restart; a checksum of the name keeps Sydney the same colour every time.
+    """
+    return zlib.crc32(destination.strip().casefold().encode()) % slots
 
 
 def snapshot(
